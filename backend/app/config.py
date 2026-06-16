@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     supabase_key: str
     poll_interval_seconds: int = 60
     env: str = "development"
+    frontend_url: str = "https://worldcup-intel-gsl8.vercel.app"
 
     # Football-Data.org World Cup 2026 competition code
     wc_competition_code: str = "WC"
