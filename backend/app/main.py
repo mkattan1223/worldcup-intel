@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -9,7 +10,10 @@ from app.config import settings
 from app.routers import matches, teams, analytics
 from app.services.ingestion import run_full_sync
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
@@ -17,8 +21,21 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — running initial sync")
-    await run_full_sync()
+    port = os.environ.get("PORT", "8000")
+    logger.info("Starting WorldCup Intel API on port %s (env=%s)", port, settings.env)
+    logger.info(
+        "Config: supabase_url=%s frontend_url=%s poll_interval=%ds",
+        settings.supabase_url[:40] + "..." if len(settings.supabase_url) > 40 else settings.supabase_url,
+        settings.frontend_url,
+        settings.poll_interval_seconds,
+    )
+
+    logger.info("Running initial data sync...")
+    try:
+        result = await run_full_sync()
+        logger.info("Initial sync complete: %s", result)
+    except Exception as exc:
+        logger.error("Initial sync failed (app will still start): %s", exc)
 
     scheduler.add_job(
         run_full_sync,
@@ -63,7 +80,17 @@ app.include_router(analytics.router)
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "poll_interval_seconds": settings.poll_interval_seconds}
+    return {
+        "status": "ok",
+        "env": settings.env,
+        "poll_interval_seconds": settings.poll_interval_seconds,
+        "frontend_url": settings.frontend_url,
+    }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 
 
 @app.post("/sync", tags=["admin"])
