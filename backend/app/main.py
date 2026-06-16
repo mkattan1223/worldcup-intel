@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -19,23 +20,14 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    port = os.environ.get("PORT", "8000")
-    logger.info("Starting WorldCup Intel API on port %s (env=%s)", port, settings.env)
-    logger.info(
-        "Config: supabase_url=%s frontend_url=%s poll_interval=%ds",
-        settings.supabase_url[:40] + "..." if len(settings.supabase_url) > 40 else settings.supabase_url,
-        settings.frontend_url,
-        settings.poll_interval_seconds,
-    )
-
-    logger.info("Running initial data sync...")
+async def _background_sync():
+    """Run initial sync then start the recurring scheduler."""
+    logger.info("Background sync starting...")
     try:
         result = await run_full_sync()
         logger.info("Initial sync complete: %s", result)
     except Exception as exc:
-        logger.error("Initial sync failed (app will still start): %s", exc)
+        logger.error("Initial sync failed: %s", exc)
 
     scheduler.add_job(
         run_full_sync,
@@ -47,9 +39,19 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("Scheduler started: polling every %ds", settings.poll_interval_seconds)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    port = os.environ.get("PORT", "8000")
+    logger.info("WorldCup Intel API starting on port %s", port)
+
+    # Fire sync in background — app is ready to serve requests immediately
+    asyncio.create_task(_background_sync())
+
     yield
 
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
     logger.info("Scheduler stopped")
 
 
@@ -78,19 +80,18 @@ app.include_router(teams.router)
 app.include_router(analytics.router)
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/")
 async def root():
     return {
         "status": "ok",
         "env": settings.env,
         "poll_interval_seconds": settings.poll_interval_seconds,
-        "frontend_url": settings.frontend_url,
     }
-
-
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
 
 
 @app.post("/sync", tags=["admin"])
