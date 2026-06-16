@@ -4,6 +4,8 @@ import os
 import sys
 from contextlib import asynccontextmanager
 
+PORT = int(os.environ.get("PORT", 8000))
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,8 +49,7 @@ async def _background_sync():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=== WorldCup Intel API starting up ===")
-    logger.info("PORT=%s SUPABASE_URL=%s...", os.environ.get("PORT", "NOT SET"),
-                settings.supabase_url[:30])
+    logger.info("PORT=%d SUPABASE_URL=%s...", PORT, settings.supabase_url[:30])
     logger.info("=== App ready — background sync launching ===")
 
     asyncio.create_task(_background_sync())
