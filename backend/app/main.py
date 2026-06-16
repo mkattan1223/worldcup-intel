@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -14,6 +15,7 @@ from app.services.ingestion import run_full_sync
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 
@@ -21,38 +23,41 @@ scheduler = AsyncIOScheduler()
 
 
 async def _background_sync():
-    """Run initial sync then start the recurring scheduler."""
     logger.info("Background sync starting...")
     try:
         result = await run_full_sync()
         logger.info("Initial sync complete: %s", result)
     except Exception as exc:
-        logger.error("Initial sync failed: %s", exc)
+        logger.error("Initial sync error (non-fatal): %s", exc, exc_info=True)
 
-    scheduler.add_job(
-        run_full_sync,
-        "interval",
-        seconds=settings.poll_interval_seconds,
-        id="full_sync",
-        replace_existing=True,
-    )
-    scheduler.start()
-    logger.info("Scheduler started: polling every %ds", settings.poll_interval_seconds)
+    try:
+        scheduler.add_job(
+            run_full_sync,
+            "interval",
+            seconds=settings.poll_interval_seconds,
+            id="full_sync",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info("Scheduler running, polling every %ds", settings.poll_interval_seconds)
+    except Exception as exc:
+        logger.error("Scheduler failed to start: %s", exc, exc_info=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    port = os.environ.get("PORT", "8000")
-    logger.info("WorldCup Intel API starting on port %s", port)
+    logger.info("=== WorldCup Intel API starting up ===")
+    logger.info("PORT=%s SUPABASE_URL=%s...", os.environ.get("PORT", "NOT SET"),
+                settings.supabase_url[:30])
+    logger.info("=== App ready — background sync launching ===")
 
-    # Fire sync in background — app is ready to serve requests immediately
     asyncio.create_task(_background_sync())
 
     yield
 
+    logger.info("Shutting down...")
     if scheduler.running:
         scheduler.shutdown()
-    logger.info("Scheduler stopped")
 
 
 app = FastAPI(
