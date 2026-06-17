@@ -76,6 +76,12 @@ export interface MatchLineups {
   home: { formation: string | null; lineup: Player[]; bench: Player[] }
   away: { formation: string | null; lineup: Player[]; bench: Player[] }
   status: string
+  isPredicted?: boolean
+  isOfficial?: boolean
+  basedOn?: string | null
+  minutesUntilKickoff?: number | null
+  awaitingOfficial?: boolean
+  source?: string
 }
 
 export interface H2HMatch {

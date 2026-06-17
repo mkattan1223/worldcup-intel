@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { getTeamTactics } from '../data/teamTactics'
 import { api } from '../services/api'
 import type { MatchLineups } from '../types'
@@ -70,6 +70,7 @@ const FORMATIONS: Record<string, Position[]> = {
 }
 
 const KNOWN = Object.keys(FORMATIONS)
+const R = 14
 
 function guessFormation(f: string | null | undefined): string {
   if (!f) return '4-3-3'
@@ -80,7 +81,7 @@ function guessFormation(f: string | null | undefined): string {
 function shortName(name: string): string {
   const parts = name.trim().split(' ')
   if (parts.length === 1) return name.slice(0, 8)
-  return parts[parts.length - 1].slice(0, 9)
+  return parts[parts.length - 1].slice(0, 8)
 }
 
 function Pitch({
@@ -89,8 +90,8 @@ function Pitch({
   const positions = FORMATIONS[formation] ?? FORMATIONS['4-3-3']
   const hasPlayers = players.length >= 11
   return (
-    <svg viewBox="0 0 220 340" className="w-full max-w-[220px] mx-auto select-none">
-      {Array.from({ length: 7 }).map((_, i) => (
+    <svg viewBox="0 0 220 352" className="w-full max-w-[220px] mx-auto select-none">
+      {Array.from({ length: 8 }).map((_, i) => (
         <rect key={i} x="0" y={i * 49} width="220" height="49"
           fill={i % 2 === 0 ? '#14532d' : '#166534'} />
       ))}
@@ -111,23 +112,30 @@ function Pitch({
           ? (1 - pos.y / 100) * 324 + 8
           : (pos.y / 100) * 324 + 8
         const player = hasPlayers ? players[i] : null
-        const topLabel = player ? String(player.shirtNumber ?? '') : pos.label
-        const botLabel = player ? shortName(player.name) : ''
+        const numLabel = player ? String(player.shirtNumber ?? '') : pos.label
+        const nameLabel = player ? shortName(player.name) : ''
+        // Clamp name rect so it doesn't overflow left/right edges
+        const rectW = 34
+        const rectX = Math.max(2, Math.min(220 - rectW - 2, rx - rectW / 2))
         return (
           <g key={i}>
-            <circle cx={rx + 1} cy={ry + 1} r={11} fill="black" opacity="0.25" />
-            <circle cx={rx} cy={ry} r={11} fill={color} stroke="white" strokeWidth="1.5" />
-            <text x={rx} y={ry + (botLabel ? -2 : 0.5)}
+            <circle cx={rx + 1.5} cy={ry + 1.5} r={R} fill="black" opacity="0.25" />
+            <circle cx={rx} cy={ry} r={R} fill={color} stroke="white" strokeWidth="1.5" />
+            <text x={rx} y={ry}
               textAnchor="middle" dominantBaseline="middle"
-              fontSize={topLabel.length > 2 ? '4.5' : '5.5'} fontWeight="800" fill="white">
-              {topLabel}
+              fontSize={numLabel.length > 2 ? '5.5' : '7'} fontWeight="800" fill="white">
+              {numLabel}
             </text>
-            {botLabel && (
-              <text x={rx} y={ry + 6}
-                textAnchor="middle" dominantBaseline="middle"
-                fontSize="3.8" fontWeight="600" fill="rgba(255,255,255,0.85)">
-                {botLabel}
-              </text>
+            {nameLabel && (
+              <>
+                <rect x={rectX} y={ry + R + 1} width={rectW} height={11}
+                  rx="2" fill="rgba(0,0,0,0.65)" />
+                <text x={rx} y={ry + R + 7}
+                  textAnchor="middle" dominantBaseline="middle"
+                  fontSize="4.5" fontWeight="600" fill="white">
+                  {nameLabel}
+                </text>
+              </>
             )}
           </g>
         )
@@ -153,16 +161,28 @@ export default function FormationDiagram({
 
   const [lineups, setLineups] = useState<MatchLineups | null>(null)
 
-  useEffect(() => {
+  const fetchLineups = useCallback(() => {
     if (!matchId) return
     api.getMatchLineups(matchId)
       .then(data => {
         if ((data.home?.lineup?.length ?? 0) > 0 || (data.away?.lineup?.length ?? 0) > 0) {
           setLineups(data)
+        } else {
+          setLineups(data)
         }
       })
       .catch(() => {})
   }, [matchId])
+
+  useEffect(() => { fetchLineups() }, [fetchLineups])
+
+  // Auto-refresh every 2 min when within 60 min of kickoff and lineup is predicted
+  useEffect(() => {
+    const mins = lineups?.minutesUntilKickoff
+    if (mins === undefined || mins === null || mins <= 0 || mins > 60) return
+    const timer = setInterval(fetchLineups, 120_000)
+    return () => clearInterval(timer)
+  }, [lineups?.minutesUntilKickoff, fetchLineups])
 
   const hFormation = guessFormation(lineups?.home?.formation ?? homeTactics.formation)
   const aFormation = guessFormation(lineups?.away?.formation ?? awayTactics.formation)
@@ -170,13 +190,49 @@ export default function FormationDiagram({
   const aPlayers = lineups?.away?.lineup ?? []
   const hasRealLineups = hPlayers.length >= 11 || aPlayers.length >= 11
 
+  const mins = lineups?.minutesUntilKickoff
+  const hoursLeft = mins !== null && mins !== undefined && mins > 0 ? Math.floor(mins / 60) : 0
+  const minsLeft = mins !== null && mins !== undefined && mins > 0 ? Math.floor(mins % 60) : 0
+
   return (
     <div className="space-y-4">
-      <div className="rounded-xl bg-slate-700/20 border border-slate-600/30 px-3 py-2 text-xs text-slate-400 text-center">
-        {hasRealLineups
-          ? `Official lineups via ESPN · ${hFormation} vs ${aFormation}`
-          : 'Tactical formations based on each coach\'s known preferred system. Official lineups not available on free API tier.'}
-      </div>
+      {/* Status banner */}
+      {lineups?.isOfficial ? (
+        <div className="rounded-xl bg-emerald-900/30 border border-emerald-500/40 px-3 py-2.5 flex items-center gap-2 text-xs text-emerald-300">
+          <span className="text-base">✓</span>
+          <span className="font-semibold">Official lineups confirmed</span>
+          <span className="text-emerald-500 ml-auto">via ESPN · {hFormation} vs {aFormation}</span>
+        </div>
+      ) : lineups?.awaitingOfficial ? (
+        <div className="rounded-xl bg-amber-900/30 border border-amber-500/40 px-3 py-2.5 space-y-1 text-xs">
+          <div className="flex items-center gap-2 text-amber-300">
+            <span className="text-base">⏳</span>
+            <span className="font-semibold">Official lineup not yet released</span>
+            <span className="ml-auto text-amber-500">
+              {hoursLeft > 0 ? `${hoursLeft}h ` : ''}{minsLeft}m to kickoff
+            </span>
+          </div>
+          {lineups.basedOn && (
+            <p className="text-amber-600 pl-7">Showing predicted XI · {lineups.basedOn}</p>
+          )}
+        </div>
+      ) : lineups?.isPredicted ? (
+        <div className="rounded-xl bg-yellow-900/25 border border-yellow-600/40 px-3 py-2.5 space-y-1 text-xs">
+          <div className="flex items-center gap-2 text-yellow-300">
+            <span className="text-base">~</span>
+            <span className="font-semibold">Predicted starting XI</span>
+          </div>
+          {lineups.basedOn && (
+            <p className="text-yellow-600 pl-5">{lineups.basedOn}</p>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-xl bg-slate-700/20 border border-slate-600/30 px-3 py-2 text-xs text-slate-400 text-center">
+          {hasRealLineups
+            ? `Official lineups via ESPN · ${hFormation} vs ${aFormation}`
+            : "Tactical formations based on each coach's known preferred system."}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -194,6 +250,33 @@ export default function FormationDiagram({
           <Pitch formation={aFormation} color={awayColor} flip players={aPlayers} />
         </div>
       </div>
+
+      {/* Bench section */}
+      {(lineups?.home?.bench?.length ?? 0) > 0 || (lineups?.away?.bench?.length ?? 0) > 0 ? (
+        <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-700/40">
+          {[
+            { label: homeTeamName, color: homeColor, bench: lineups?.home?.bench ?? [] },
+            { label: awayTeamName, color: awayColor, bench: lineups?.away?.bench ?? [] },
+          ].map(({ label, color, bench }) => (
+            bench.length > 0 ? (
+              <div key={label}>
+                <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">
+                  Bench
+                </p>
+                <div className="space-y-0.5">
+                  {bench.slice(0, 7).map((p, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs text-slate-400">
+                      <span className="w-4 text-right text-[10px] font-bold"
+                        style={{ color }}>{p.shirtNumber}</span>
+                      <span className="truncate">{p.name}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : <div key={label} />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }

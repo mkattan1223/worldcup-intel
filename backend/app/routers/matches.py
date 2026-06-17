@@ -1,11 +1,13 @@
 import logging
 import httpx
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_supabase
 from app.services.football_data import get_football_data_client
 from app.services.poisson import score_probability_grid
 from app.data.csv_loader import find_h2h, find_form
 from app.data.team_name_map import TEAM_NAME_MAP, resolve_csv_name
+from app.data.espn_team_map import ESPN_TEAM_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -42,148 +44,219 @@ async def get_match(match_id: int):
     return result.data
 
 
+def _parse_espn_roster(roster: dict) -> dict:
+    """Parse a single ESPN roster object into {formation, lineup, bench}."""
+    empty = {"formation": None, "lineup": [], "bench": []}
+    if not roster:
+        return empty
+    formation = roster.get("formation") or None
+    entries = roster.get("roster", roster.get("entries", []))
+    lineup, bench = [], []
+    for e in entries:
+        athlete = e.get("athlete", {})
+        pos_obj = e.get("position", athlete.get("position", {}))
+        pos = pos_obj.get("abbreviation", "") if isinstance(pos_obj, dict) else str(pos_obj)
+        player = {
+            "id": athlete.get("id"),
+            "name": athlete.get("displayName", athlete.get("fullName", "")),
+            "shirtNumber": e.get("jersey", athlete.get("jersey")),
+            "position": pos,
+        }
+        if e.get("starter") is True:
+            lineup.append(player)
+        else:
+            bench.append(player)
+    return {"formation": formation, "lineup": lineup, "bench": bench}
+
+
+async def _espn_fetch_rosters(event_id: str) -> list[dict]:
+    """Fetch rosters for a known ESPN event ID."""
+    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary?event={event_id}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url)
+    if resp.status_code != 200:
+        return []
+    return resp.json().get("rosters", [])
+
+
+async def _espn_find_event(match_date_str: str, home_name: str) -> str | None:
+    """Find ESPN event ID for a match by date + home team name. Tries UTC date and UTC-1."""
+    if not match_date_str:
+        return None
+    base = datetime.strptime(match_date_str[:10].replace("-", ""), "%Y%m%d")
+    dates_to_try = [base.strftime("%Y%m%d"), (base - timedelta(days=1)).strftime("%Y%m%d")]
+    async with httpx.AsyncClient(timeout=10) as client:
+        for d in dates_to_try:
+            resp = await client.get(
+                f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates={d}"
+            )
+            if resp.status_code != 200:
+                continue
+            for ev in resp.json().get("events", []):
+                comps = ev.get("competitions", [])
+                if not comps:
+                    continue
+                teams = {c.get("team", {}).get("displayName", "").lower()
+                         for c in comps[0].get("competitors", [])}
+                if home_name.lower() in teams or any(home_name.lower()[:5] in t for t in teams):
+                    return str(ev["id"])
+    return None
+
+
+async def _espn_rosters_for_match(match_date: str, home_name: str) -> list[dict]:
+    """Convenience: find event + fetch its rosters."""
+    event_id = await _espn_find_event(match_date, home_name)
+    if not event_id:
+        return []
+    return await _espn_fetch_rosters(event_id)
+
+
+def _assign_sides(rosters: list[dict], home_name: str) -> tuple[dict, dict]:
+    """Split ESPN rosters into home/away dicts."""
+    empty = {"formation": None, "lineup": [], "bench": []}
+    home_side: dict = {}
+    away_side: dict = {}
+    for r in rosters:
+        dn = r.get("team", {}).get("displayName", "")
+        if home_name.lower()[:5] in dn.lower():
+            home_side = _parse_espn_roster(r)
+        else:
+            away_side = _parse_espn_roster(r)
+    if not home_side and len(rosters) >= 2:
+        home_side = _parse_espn_roster(rosters[0])
+        away_side = _parse_espn_roster(rosters[1])
+    return home_side or empty, away_side or empty
+
+
+async def _fetch_predicted_side(fdb_team_id: int, team_name: str) -> tuple[dict, str]:
+    """Fetch the lineup from a team's most recent WC match as a predicted lineup.
+    Returns (side_dict, based_on_string)."""
+    empty = {"formation": None, "lineup": [], "bench": []}
+    espn_id = ESPN_TEAM_MAP.get(fdb_team_id)
+    if not espn_id:
+        return empty, ""
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/teams/{espn_id}/schedule"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return empty, ""
+        events = resp.json().get("events", [])
+        # Find the most recent completed event
+        finished = [ev for ev in events
+                    if ev.get("competitions", [{}])[0].get("status", {})
+                       .get("type", {}).get("completed", False)]
+        if not finished:
+            return empty, ""
+        last = finished[-1]
+        last_event_id = str(last["id"])
+        last_date = last.get("date", "")[:10]
+        # Get opponent name for the based_on message
+        comps = last.get("competitions", [{}])[0].get("competitors", [])
+        opp = next(
+            (c["team"]["displayName"] for c in comps
+             if c.get("team", {}).get("displayName", "").lower()[:5] not in team_name.lower()[:5]),
+            "previous match"
+        )
+        rosters = await _espn_fetch_rosters(last_event_id)
+        # Find this team's side
+        for r in rosters:
+            dn = r.get("team", {}).get("displayName", "")
+            if team_name.lower()[:5] in dn.lower() or dn.lower()[:5] in team_name.lower():
+                return _parse_espn_roster(r), f"vs {opp} on {last_date}"
+        # Fallback: if we can't match by name, try homeAway=home side
+        if rosters:
+            return _parse_espn_roster(rosters[0]), f"vs {opp} on {last_date}"
+    except Exception as exc:
+        logger.warning("Predicted lineup fetch failed for %s: %s", team_name, exc)
+    return empty, ""
+
+
 @router.get("/{match_id}/lineups")
 async def match_lineups(match_id: int):
-    """Try ESPN API for real lineups; fall back to graceful empty response."""
+    """Smart lineup endpoint:
+    - FINISHED / IN_PLAY: returns actual lineup from ESPN
+    - SCHEDULED ≤ 20 min to kickoff: tries ESPN for official, falls back to predicted
+    - SCHEDULED > 20 min to kickoff: returns predicted lineup from team's last WC match
+    """
     db = get_supabase()
     match_result = db.table("matches").select("*").eq("id", match_id).single().execute()
-    match = match_result.data or {}
+    if not match_result.data:
+        raise HTTPException(status_code=404, detail="Match not found")
+    match = match_result.data
 
     utc_date = match.get("utc_date", "")
     home_name = match.get("home_team_name", "")
     away_name = match.get("away_team_name", "")
-
-    # Build ESPN date string (YYYYMMDD)
-    espn_date = utc_date[:10].replace("-", "") if utc_date else ""
-
+    status = match.get("status", "SCHEDULED")
+    home_id = match.get("home_team_id")
+    away_id = match.get("away_team_id")
     empty = {"formation": None, "lineup": [], "bench": []}
 
-    async def try_espn() -> dict | None:
-        if not espn_date:
-            return None
-        try:
-            # Many WC games are played in US evenings → UTC date is day+1
-            # Try both UTC date and UTC date-1 to cover both cases
-            from datetime import datetime, timedelta
-            dt = datetime.strptime(espn_date, "%Y%m%d")
-            dates_to_try = [espn_date, (dt - timedelta(days=1)).strftime("%Y%m%d")]
-
-            espn_event_id = None
-            for d in dates_to_try:
-                scoreboard_url = (
-                    f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
-                    f"?dates={d}"
-                )
-                async with httpx.AsyncClient(timeout=8) as client:
-                    sb = await client.get(scoreboard_url)
-                if sb.status_code != 200:
-                    continue
-                events = sb.json().get("events", [])
-
-                # Find matching event by team name similarity
-                for ev in events:
-                    comps = ev.get("competitions", [{}])
-                    if not comps:
-                        continue
-                    comp = comps[0]
-                    teams = {c.get("team", {}).get("displayName", "").lower() for c in comp.get("competitors", [])}
-                    if (home_name.lower() in teams or any(home_name.lower()[:5] in t for t in teams)):
-                        espn_event_id = ev.get("id")
-                        break
-                if espn_event_id:
-                    break
-
-            if not espn_event_id:
-                return None
-
-            summary_url = (
-                f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary"
-                f"?event={espn_event_id}"
-            )
-            async with httpx.AsyncClient(timeout=8) as client:
-                sm = await client.get(summary_url)
-            if sm.status_code != 200:
-                return None
-
-            rosters = sm.json().get("rosters", [])
-            if not rosters:
-                return None
-
-            def parse_side(roster: dict) -> dict:
-                formation = roster.get("formation", None)
-                # ESPN uses "roster" key (not "entries")
-                entries = roster.get("roster", roster.get("entries", []))
-                lineup, bench = [], []
-                for e in entries:
-                    athlete = e.get("athlete", {})
-                    pos_obj = e.get("position", athlete.get("position", {}))
-                    if isinstance(pos_obj, dict):
-                        pos = pos_obj.get("abbreviation", "")
-                    else:
-                        pos = str(pos_obj)
-                    player = {
-                        "id": athlete.get("id"),
-                        "name": athlete.get("displayName", athlete.get("fullName", "")),
-                        "shirtNumber": e.get("jersey", athlete.get("jersey")),
-                        "position": pos,
-                    }
-                    # ESPN uses starter:true boolean (not position string)
-                    if e.get("starter") is True:
-                        lineup.append(player)
-                    else:
-                        bench.append(player)
-                return {"formation": formation, "lineup": lineup, "bench": bench}
-
-            # Determine home / away from ESPN team names
-            home_side = {}
-            away_side = {}
-            for r in rosters:
-                team_name = r.get("team", {}).get("displayName", "")
-                if home_name.lower()[:5] in team_name.lower():
-                    home_side = parse_side(r)
-                else:
-                    away_side = parse_side(r)
-
-            if not home_side and len(rosters) >= 2:
-                home_side = parse_side(rosters[0])
-                away_side = parse_side(rosters[1])
-
-            return {"home": home_side or empty, "away": away_side or empty, "status": match.get("status", "SCHEDULED"), "source": "espn"}
-        except Exception as exc:
-            logger.warning("ESPN lineup fetch failed for match %s: %s", match_id, exc)
-            return None
-
-    espn_result = await try_espn()
-    if espn_result:
-        return espn_result
-
-    # FDB fallback (free tier rarely returns lineup data)
+    # Compute minutes until kickoff
+    minutes_until: float | None = None
     try:
-        client = get_football_data_client()
-        raw = await client.get_match(match_id)
-
-        def extract_side(team: dict) -> dict:
-            return {
-                "formation": team.get("formation"),
-                "lineup": [
-                    {"id": p.get("id"), "name": p.get("name"),
-                     "shirtNumber": p.get("shirtNumber"), "position": p.get("position")}
-                    for p in (team.get("lineup") or [])
-                ],
-                "bench": [
-                    {"id": p.get("id"), "name": p.get("name"),
-                     "shirtNumber": p.get("shirtNumber"), "position": p.get("position")}
-                    for p in (team.get("bench") or [])
-                ],
-            }
-
-        return {
-            "home": extract_side(raw.get("homeTeam", {})),
-            "away": extract_side(raw.get("awayTeam", {})),
-            "status": raw.get("status"),
-        }
+        kickoff = datetime.fromisoformat(utc_date.replace("Z", "+00:00"))
+        minutes_until = (kickoff - datetime.now(timezone.utc)).total_seconds() / 60
     except Exception:
-        return {"home": empty, "away": empty, "status": "unavailable"}
+        pass
+
+    is_live_or_done = status in ("LIVE", "IN_PLAY", "PAUSED", "FINISHED")
+
+    # ── Live / Finished: actual lineup ───────────────────────────────────────
+    if is_live_or_done:
+        try:
+            rosters = await _espn_rosters_for_match(utc_date, home_name)
+            if rosters:
+                home_side, away_side = _assign_sides(rosters, home_name)
+                if home_side.get("lineup"):
+                    return {
+                        "home": home_side, "away": away_side,
+                        "status": status, "source": "espn",
+                        "isPredicted": False, "isOfficial": True,
+                    }
+        except Exception as exc:
+            logger.warning("ESPN lineup for live/done match %s failed: %s", match_id, exc)
+        return {"home": empty, "away": empty, "status": status, "isPredicted": False, "isOfficial": False}
+
+    # ── Within 20 min: try ESPN for official lineup ───────────────────────────
+    if minutes_until is not None and minutes_until <= 20:
+        try:
+            rosters = await _espn_rosters_for_match(utc_date, home_name)
+            if rosters:
+                home_side, away_side = _assign_sides(rosters, home_name)
+                if home_side.get("lineup"):
+                    return {
+                        "home": home_side, "away": away_side,
+                        "status": status, "source": "espn",
+                        "isPredicted": False, "isOfficial": True,
+                        "minutesUntilKickoff": int(minutes_until),
+                    }
+        except Exception:
+            pass
+        # Official not yet available — fall through to predicted
+
+    # ── Predicted: use last WC match lineup ──────────────────────────────────
+    try:
+        home_pred, home_based = await _fetch_predicted_side(home_id, home_name)
+        away_pred, away_based = await _fetch_predicted_side(away_id, away_name)
+        has_prediction = bool(home_pred.get("lineup") or away_pred.get("lineup"))
+        based_on = f"{home_name}: {home_based}; {away_name}: {away_based}".strip("; ")
+        return {
+            "home": home_pred if home_pred.get("lineup") else empty,
+            "away": away_pred if away_pred.get("lineup") else empty,
+            "status": status,
+            "isPredicted": has_prediction,
+            "isOfficial": False,
+            "awaitingOfficial": minutes_until is not None and minutes_until <= 20,
+            "basedOn": based_on if has_prediction else None,
+            "minutesUntilKickoff": int(minutes_until) if minutes_until is not None else None,
+            "source": "espn-predicted",
+        }
+    except Exception as exc:
+        logger.warning("Predicted lineup failed for match %s: %s", match_id, exc)
+
+    return {"home": empty, "away": empty, "status": status, "isPredicted": False, "isOfficial": False}
 
 
 def _csv_team_name(team_id: int, supabase_name: str) -> str:
