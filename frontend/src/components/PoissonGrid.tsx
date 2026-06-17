@@ -80,20 +80,35 @@ export default function PoissonGrid({ matchId }: Props) {
 
   if (!data) return null
 
-  // Bayesian blend: 5 virtual matches of prior strength from scouting ratings
-  // At 0 WC matches → 100% static, 1 match → 83% static, 5 → 50%, 10 → 33%
+  // Multiplicative form adjustment: static lambda (cross-confederation defense) × attack form ratio
+  // Static lambda correctly handles mismatches (e.g. Portugal vs Congo) via scouting ratings.
+  // CSV form data only adjusts the team's own attacking output vs their expected baseline.
   const homeRatings = getTeamStats(data.home_team_name)
   const awayRatings = getTeamStats(data.away_team_name)
   const homeStaticLambda = staticLambda(homeRatings.attack, awayRatings.defense)
   const awayStaticLambda = staticLambda(awayRatings.attack, homeRatings.defense)
 
-  const PRIOR = 3
+  const BASE = 1.3
+  const LEAGUE_AVG = 72
+  const PRIOR = 30
   const hw = data.home_stats.matches_used / (data.home_stats.matches_used + PRIOR)
   const aw = data.away_stats.matches_used / (data.away_stats.matches_used + PRIOR)
 
-  const homeLambda = parseFloat((homeStaticLambda * (1 - hw) + data.home_lambda * hw).toFixed(3))
-  const awayLambda = parseFloat((awayStaticLambda * (1 - aw) + data.away_lambda * aw).toFixed(3))
-  const usingStatic = data.home_stats.matches_used < 5 || data.away_stats.matches_used < 5
+  // Expected goals vs average opponent from static attack rating alone
+  const homeStaticAttack = BASE * Math.pow(homeRatings.attack / LEAGUE_AVG, 1.3)
+  const awayStaticAttack = BASE * Math.pow(awayRatings.attack / LEAGUE_AVG, 1.3)
+
+  // How much over/under static expectation is each team's 2025+ CSV attack form?
+  const homeFormRatio = data.home_stats.matches_used > 0
+    ? Math.max(0.3, Math.min(3.0, data.home_stats.avg_scored / homeStaticAttack))
+    : 1.0
+  const awayFormRatio = data.away_stats.matches_used > 0
+    ? Math.max(0.3, Math.min(3.0, data.away_stats.avg_scored / awayStaticAttack))
+    : 1.0
+
+  const homeLambda = parseFloat((homeStaticLambda * Math.pow(homeFormRatio, hw)).toFixed(3))
+  const awayLambda = parseFloat((awayStaticLambda * Math.pow(awayFormRatio, aw)).toFixed(3))
+  const usingStatic = hw < 0.5 || aw < 0.5
 
   const computed = buildPoissonGrid(homeLambda, awayLambda)
   const maxProb = Math.max(...computed.grid.flat())
@@ -104,7 +119,7 @@ export default function PoissonGrid({ matchId }: Props) {
     <div className="space-y-5">
       {usingStatic && (
         <div className="rounded-xl bg-amber-950/30 border border-amber-700/30 px-3 py-2 text-xs text-amber-400">
-          Blending 2025-26 scouting ratings with WC match data. λ shifts toward live data as games are played.
+          Scouting ratings adjusted by 2025-26 form data. As matches accumulate, attack output shifts toward live data.
         </div>
       )}
 
