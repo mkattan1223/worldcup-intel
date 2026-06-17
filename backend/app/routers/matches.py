@@ -62,26 +62,35 @@ async def match_lineups(match_id: int):
         if not espn_date:
             return None
         try:
-            scoreboard_url = (
-                f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
-                f"?dates={espn_date}"
-            )
-            async with httpx.AsyncClient(timeout=8) as client:
-                sb = await client.get(scoreboard_url)
-            if sb.status_code != 200:
-                return None
-            events = sb.json().get("events", [])
+            # Many WC games are played in US evenings → UTC date is day+1
+            # Try both UTC date and UTC date-1 to cover both cases
+            from datetime import datetime, timedelta
+            dt = datetime.strptime(espn_date, "%Y%m%d")
+            dates_to_try = [espn_date, (dt - timedelta(days=1)).strftime("%Y%m%d")]
 
-            # Find matching event by team name similarity
             espn_event_id = None
-            for ev in events:
-                comps = ev.get("competitions", [{}])
-                if not comps:
+            for d in dates_to_try:
+                scoreboard_url = (
+                    f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+                    f"?dates={d}"
+                )
+                async with httpx.AsyncClient(timeout=8) as client:
+                    sb = await client.get(scoreboard_url)
+                if sb.status_code != 200:
                     continue
-                comp = comps[0]
-                teams = {c.get("team", {}).get("displayName", "").lower() for c in comp.get("competitors", [])}
-                if (home_name.lower() in teams or any(home_name.lower()[:5] in t for t in teams)):
-                    espn_event_id = ev.get("id")
+                events = sb.json().get("events", [])
+
+                # Find matching event by team name similarity
+                for ev in events:
+                    comps = ev.get("competitions", [{}])
+                    if not comps:
+                        continue
+                    comp = comps[0]
+                    teams = {c.get("team", {}).get("displayName", "").lower() for c in comp.get("competitors", [])}
+                    if (home_name.lower() in teams or any(home_name.lower()[:5] in t for t in teams)):
+                        espn_event_id = ev.get("id")
+                        break
+                if espn_event_id:
                     break
 
             if not espn_event_id:
@@ -102,19 +111,24 @@ async def match_lineups(match_id: int):
 
             def parse_side(roster: dict) -> dict:
                 formation = roster.get("formation", None)
-                entries = roster.get("entries", [])
+                # ESPN uses "roster" key (not "entries")
+                entries = roster.get("roster", roster.get("entries", []))
                 lineup, bench = [], []
                 for e in entries:
                     athlete = e.get("athlete", {})
-                    pos_obj = athlete.get("position", {})
-                    pos = pos_obj.get("abbreviation", "")
+                    pos_obj = e.get("position", athlete.get("position", {}))
+                    if isinstance(pos_obj, dict):
+                        pos = pos_obj.get("abbreviation", "")
+                    else:
+                        pos = str(pos_obj)
                     player = {
                         "id": athlete.get("id"),
-                        "name": athlete.get("displayName", ""),
-                        "shirtNumber": athlete.get("jersey"),
+                        "name": athlete.get("displayName", athlete.get("fullName", "")),
+                        "shirtNumber": e.get("jersey", athlete.get("jersey")),
                         "position": pos,
                     }
-                    if e.get("position") == "starter":
+                    # ESPN uses starter:true boolean (not position string)
+                    if e.get("starter") is True:
                         lineup.append(player)
                     else:
                         bench.append(player)
