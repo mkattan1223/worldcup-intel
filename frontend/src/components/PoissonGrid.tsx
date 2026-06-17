@@ -1,14 +1,51 @@
 import { useState, useEffect } from 'react'
 import { api } from '../services/api'
+import { getTeamStats } from '../data/teamStats'
 import type { AutoAnalysis } from '../types'
 
 function heatColor(prob: number, max: number): string {
   const t = max > 0 ? Math.min(prob / max, 1) : 0
-  // Cool blue → emerald for highest probability cells
   const r = Math.round(16 + t * 18)
   const g = Math.round(24 + t * 155)
   const b = Math.round(40 + t * 80)
   return `rgb(${r},${g},${b})`
+}
+
+// Poisson PMF: P(X=k) computed in log-space to avoid overflow
+function poissonPMF(lambda: number, k: number): number {
+  if (lambda <= 0) return k === 0 ? 1 : 0
+  let logP = -lambda + k * Math.log(lambda)
+  for (let i = 2; i <= k; i++) logP -= Math.log(i)
+  return Math.exp(logP)
+}
+
+// Build probability grid from two lambda values
+function buildPoissonGrid(lh: number, la: number, maxGoals = 5) {
+  const labels = Array.from({ length: maxGoals + 1 }, (_, i) => i)
+  const grid = labels.map(h => labels.map(a => poissonPMF(lh, h) * poissonPMF(la, a)))
+
+  let homeWin = 0, draw = 0, awayWin = 0
+  grid.forEach((row, h) => row.forEach((p, a) => {
+    if (h > a) homeWin += p
+    else if (h === a) draw += p
+    else awayWin += p
+  }))
+
+  const flat = grid.flat()
+  const top = [...flat]
+    .map((p, i) => ({ home: Math.floor(i / (maxGoals + 1)), away: i % (maxGoals + 1), probability: p }))
+    .sort((a, b) => b.probability - a.probability)
+    .slice(0, 8)
+
+  return { grid, labels, home_win_prob: homeWin, draw_prob: draw, away_win_prob: awayWin, top_scorelines: top }
+}
+
+// Static-strength lambda: uses 2025-26 scouting ratings when WC data is insufficient
+function staticLambda(attackRating: number, oppDefenseRating: number): number {
+  const BASE = 1.3      // avg WC group stage goals per team per game
+  const LEAGUE_AVG = 72 // midpoint of our 0-100 scale
+  const lambda = BASE * Math.pow(attackRating / LEAGUE_AVG, 1.3) * Math.pow(LEAGUE_AVG / oppDefenseRating, 0.7)
+  return Math.max(0.3, Math.min(lambda, 5.0))
 }
 
 interface Props { matchId: number }
@@ -36,38 +73,53 @@ export default function PoissonGrid({ matchId }: Props) {
 
   if (error) return (
     <div className="rounded-xl bg-red-950/40 border border-red-800/40 p-4 text-red-400 text-sm">
-      <p className="font-semibold mb-1">Could not compute analysis</p>
+      <p className="font-semibold mb-1">Could not load match data</p>
       <p className="text-red-500 text-xs">{error}</p>
-      <p className="text-slate-500 text-xs mt-2">Need at least 1 finished match per team in Supabase.</p>
     </div>
   )
 
   if (!data) return null
 
-  const maxProb = Math.max(...data.grid.flat())
+  // Use static scouting data when fewer than 2 WC matches played per team
+  const needsStaticFallback = data.home_stats.matches_used < 2 || data.away_stats.matches_used < 2
+  let displayHome = data
+  let homeLambda = data.home_lambda
+  let awayLambda = data.away_lambda
+  let usingStatic = false
+
+  if (needsStaticFallback) {
+    const homeStats = getTeamStats(data.home_team_name)
+    const awayStats = getTeamStats(data.away_team_name)
+    homeLambda = staticLambda(homeStats.attack, awayStats.defense)
+    awayLambda = staticLambda(awayStats.attack, homeStats.defense)
+    usingStatic = true
+  }
+
+  const computed = buildPoissonGrid(homeLambda, awayLambda)
+  const maxProb = Math.max(...computed.grid.flat())
   const isTop3 = (h: number, a: number) =>
-    data.top_scorelines.slice(0, 3).some(s => s.home === h && s.away === a)
+    computed.top_scorelines.slice(0, 3).some(s => s.home === h && s.away === a)
 
   return (
     <div className="space-y-5">
+      {usingStatic && (
+        <div className="rounded-xl bg-amber-950/30 border border-amber-700/30 px-3 py-2 text-xs text-amber-400">
+          Using scouting ratings (insufficient WC match history yet). λ updates as games are played.
+        </div>
+      )}
+
       {/* xG summary */}
       <div className="grid grid-cols-2 gap-3">
         {[
           {
-            label: data.home_team_name,
-            crest: data.home_team_crest,
-            lambda: data.home_lambda,
-            stats: data.home_stats,
-            color: 'text-emerald-400',
-            bg: 'bg-emerald-900/20 border-emerald-700/30',
+            label: data.home_team_name, crest: data.home_team_crest,
+            lambda: homeLambda, stats: data.home_stats,
+            color: 'text-emerald-400', bg: 'bg-emerald-900/20 border-emerald-700/30',
           },
           {
-            label: data.away_team_name,
-            crest: data.away_team_crest,
-            lambda: data.away_lambda,
-            stats: data.away_stats,
-            color: 'text-blue-400',
-            bg: 'bg-blue-900/20 border-blue-700/30',
+            label: data.away_team_name, crest: data.away_team_crest,
+            lambda: awayLambda, stats: data.away_stats,
+            color: 'text-blue-400', bg: 'bg-blue-900/20 border-blue-700/30',
           },
         ].map(({ label, crest, lambda, stats, color, bg }) => (
           <div key={label} className={`rounded-xl border p-3 ${bg}`}>
@@ -79,7 +131,7 @@ export default function PoissonGrid({ matchId }: Props) {
             <div className="text-xs text-slate-500 mt-0.5">xG (λ)</div>
             <div className="text-xs text-slate-600 mt-1">
               {stats.avg_scored.toFixed(2)} scored · {stats.avg_conceded.toFixed(2)} conceded
-              <span className="ml-1">({stats.matches_used} matches)</span>
+              <span className="ml-1">({stats.matches_used} WC matches)</span>
             </div>
           </div>
         ))}
@@ -89,19 +141,17 @@ export default function PoissonGrid({ matchId }: Props) {
       <div>
         <div className="flex justify-between text-xs mb-1.5">
           <span className="text-emerald-400 font-semibold">
-            {data.home_team_name} {(data.home_win_prob * 100).toFixed(1)}%
+            {data.home_team_name} {(computed.home_win_prob * 100).toFixed(1)}%
           </span>
-          <span className="text-slate-400">
-            Draw {(data.draw_prob * 100).toFixed(1)}%
-          </span>
+          <span className="text-slate-400">Draw {(computed.draw_prob * 100).toFixed(1)}%</span>
           <span className="text-blue-400 font-semibold">
-            {(data.away_win_prob * 100).toFixed(1)}% {data.away_team_name}
+            {(computed.away_win_prob * 100).toFixed(1)}% {data.away_team_name}
           </span>
         </div>
         <div className="h-3 flex rounded-full overflow-hidden gap-px">
-          <div className="bg-emerald-500 transition-all" style={{ width: `${data.home_win_prob * 100}%` }} />
-          <div className="bg-slate-500 transition-all" style={{ width: `${data.draw_prob * 100}%` }} />
-          <div className="bg-blue-500 transition-all" style={{ width: `${data.away_win_prob * 100}%` }} />
+          <div className="bg-emerald-500 transition-all" style={{ width: `${computed.home_win_prob * 100}%` }} />
+          <div className="bg-slate-500 transition-all" style={{ width: `${computed.draw_prob * 100}%` }} />
+          <div className="bg-blue-500 transition-all" style={{ width: `${computed.away_win_prob * 100}%` }} />
         </div>
       </div>
 
@@ -109,7 +159,7 @@ export default function PoissonGrid({ matchId }: Props) {
       <div>
         <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-2">Most Likely Scorelines</p>
         <div className="flex flex-wrap gap-2">
-          {data.top_scorelines.map((s, i) => (
+          {computed.top_scorelines.map((s, i) => (
             <div key={i} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 border text-sm
               ${i === 0 ? 'bg-amber-900/30 border-amber-600/50 text-amber-300' : 'bg-slate-700/50 border-slate-600/50 text-slate-300'}`}>
               <span className="font-bold">{s.home}–{s.away}</span>
@@ -129,32 +179,26 @@ export default function PoissonGrid({ matchId }: Props) {
           <table className="text-xs border-collapse">
             <thead>
               <tr>
-                <th className="w-8 h-8 text-slate-500 text-center border border-slate-700/50 bg-slate-800">
-                  H╲A
-                </th>
-                {data.labels.map(a => (
-                  <th key={a} className="w-10 h-8 font-bold text-blue-400 text-center border border-slate-700/50 bg-slate-800">
-                    {a}
-                  </th>
+                <th className="w-8 h-8 text-slate-500 text-center border border-slate-700/50 bg-slate-800">H╲A</th>
+                {computed.labels.map(a => (
+                  <th key={a} className="w-10 h-8 font-bold text-blue-400 text-center border border-slate-700/50 bg-slate-800">{a}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {data.grid.map((row, h) => (
+              {computed.grid.map((row, h) => (
                 <tr key={h}>
                   <td className="w-8 h-8 font-bold text-emerald-400 text-center border border-slate-700/50 bg-slate-800">
-                    {data.labels[h]}
+                    {computed.labels[h]}
                   </td>
                   {row.map((prob, a) => {
                     const top = isTop3(h, a)
                     return (
-                      <td
-                        key={a}
+                      <td key={a}
                         title={`${h}–${a}: ${(prob * 100).toFixed(2)}%`}
-                        className={`w-10 h-8 text-center border font-mono transition-colors cursor-default
+                        className={`w-10 h-8 text-center border font-mono cursor-default
                           ${top ? 'border-amber-500/70 ring-1 ring-inset ring-amber-500/40' : 'border-slate-700/30'}`}
-                        style={{ backgroundColor: heatColor(prob, maxProb) }}
-                      >
+                        style={{ backgroundColor: heatColor(prob, maxProb) }}>
                         <span className={`text-xs ${top ? 'text-amber-200 font-bold' : 'text-slate-300'}`}>
                           {(prob * 100).toFixed(1)}
                         </span>
@@ -166,9 +210,7 @@ export default function PoissonGrid({ matchId }: Props) {
             </tbody>
           </table>
         </div>
-        <p className="text-xs text-slate-600 mt-1">
-          Values in % · Gold = top 3 scorelines · xG derived from last 10 WC matches per team
-        </p>
+        <p className="text-xs text-slate-600 mt-1">Values in % · Gold = top 3 scorelines</p>
       </div>
     </div>
   )

@@ -1,74 +1,65 @@
-import { getTeamTactics } from '../data/teamTactics'
+import { getCoach } from '../data/coaches'
 
-const INTENSITY_COLOR = {
-  high:   'bg-red-900/40 text-red-300 border-red-700/40',
-  medium: 'bg-amber-900/40 text-amber-300 border-amber-700/40',
-  low:    'bg-slate-700/40 text-slate-400 border-slate-600/40',
+function Bar({ value, color }: { value: number; color: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 bg-slate-700 rounded-full h-2 overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${value * 10}%`, background: color }} />
+      </div>
+      <span className="text-xs text-slate-400 w-5 text-right">{value}</span>
+    </div>
+  )
 }
 
-const LINE_COLOR = {
-  high:   'text-red-400',
-  medium: 'text-amber-400',
-  low:    'text-slate-400',
-}
-
-function TacticsCard({ teamName, color }: { teamName: string; color: string }) {
-  const t = getTeamTactics(teamName)
-
+function CoachCard({ teamName, color }: { teamName: string; color: string }) {
+  const c = getCoach(teamName)
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="flex-1 min-w-0">
-          <h3 className="font-bold text-sm truncate" style={{ color }}>{teamName}</h3>
-          <p className="text-xs text-slate-500 mt-0.5">
-            {t.coach} · <span className="text-slate-400">{t.coachNationality}</span>
-          </p>
+      {/* Coach header */}
+      <div className="bg-slate-700/30 rounded-xl p-4">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-white font-bold text-sm">{c.name}</p>
+            <p className="text-slate-400 text-xs mt-0.5">{c.nationality}{c.age > 0 ? ` · Age ${c.age}` : ''}</p>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <span className="text-lg font-black" style={{ color }}>{c.formation}</span>
+            <p className="text-xs text-slate-500">Formation</p>
+          </div>
         </div>
-        <div className="flex-shrink-0 text-center">
-          <span className="text-lg font-black text-white">{t.formation}</span>
-          <p className="text-xs text-slate-500">Formation</p>
-        </div>
-      </div>
-
-      {/* Metrics row */}
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div className="bg-slate-700/40 rounded-lg p-2.5">
-          <p className="text-slate-500 mb-1">Pressing Intensity</p>
-          <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-xs font-semibold ${
-            INTENSITY_COLOR[t.pressingIntensity]
-          }`}>
-            {t.pressingIntensity.charAt(0).toUpperCase() + t.pressingIntensity.slice(1)}
-          </span>
-        </div>
-        <div className="bg-slate-700/40 rounded-lg p-2.5">
-          <p className="text-slate-500 mb-1">Defensive Line</p>
-          <span className={`font-bold ${LINE_COLOR[t.defensiveLine]}`}>
-            {t.defensiveLine.charAt(0).toUpperCase() + t.defensiveLine.slice(1)} Block
-          </span>
+        <div className="mt-3 inline-flex items-center px-2 py-1 rounded-full border text-xs font-medium bg-slate-700/50 border-slate-600/50 text-slate-300">
+          {c.style}
         </div>
       </div>
 
-      {/* Playing style */}
-      <div className="bg-slate-700/30 rounded-lg p-3">
-        <p className="text-xs text-slate-500 mb-1">Playing Style</p>
-        <p className="text-sm font-semibold text-white">{t.playingStyle}</p>
+      {/* Intensity bars */}
+      <div className="space-y-3">
+        <div>
+          <p className="text-xs text-slate-500 mb-1.5">Pressing Intensity</p>
+          <Bar value={c.pressingIntensity} color={c.pressingIntensity >= 7 ? '#ef4444' : c.pressingIntensity >= 5 ? '#f59e0b' : '#64748b'} />
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-1.5">Defensive Line</p>
+          <Bar value={c.defensiveLine} color={c.defensiveLine >= 7 ? '#ef4444' : c.defensiveLine >= 5 ? '#f59e0b' : '#64748b'} />
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 mb-1.5">Tempo</p>
+          <Bar value={c.tempo} color={color} />
+        </div>
       </div>
 
-      {/* Key instructions */}
+      {/* Tactical traits */}
       <div>
-        <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Key Instructions</p>
-        <ul className="space-y-1.5">
-          {t.keyInstructions.map((inst, i) => (
-            <li key={i} className="flex items-start gap-2 text-xs text-slate-300">
-              <span className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold"
-                style={{ background: color + '33', color }}>
-                {i + 1}
-              </span>
-              {inst}
-            </li>
+        <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Key Traits</p>
+        <div className="flex flex-wrap gap-1.5">
+          {c.traits.map((t, i) => (
+            <span key={i}
+              className="inline-flex items-center text-xs px-2.5 py-1 rounded-full border"
+              style={{ borderColor: color + '40', color, background: color + '10' }}>
+              {t}
+            </span>
           ))}
-        </ul>
+        </div>
       </div>
     </div>
   )
@@ -82,9 +73,13 @@ interface Props {
 export default function Tactics({ homeTeamName, awayTeamName }: Props) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-      <TacticsCard teamName={homeTeamName} color="#22c55e" />
+      <div>
+        <p className="text-xs text-emerald-400 font-bold uppercase tracking-wider mb-3">{homeTeamName}</p>
+        <CoachCard teamName={homeTeamName} color="#22c55e" />
+      </div>
       <div className="sm:border-l sm:border-slate-700 sm:pl-6">
-        <TacticsCard teamName={awayTeamName} color="#3b82f6" />
+        <p className="text-xs text-blue-400 font-bold uppercase tracking-wider mb-3">{awayTeamName}</p>
+        <CoachCard teamName={awayTeamName} color="#3b82f6" />
       </div>
     </div>
   )
