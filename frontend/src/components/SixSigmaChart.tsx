@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import {
   ComposedChart, Line, ReferenceLine, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, Dot,
+  Tooltip, ResponsiveContainer,
 } from 'recharts'
 import { api } from '../services/api'
+import { getTeamStats } from '../data/teamStats'
 import type { ControlChartData } from '../types'
 
 type Metric = 'goals_scored' | 'goals_conceded'
@@ -30,6 +31,7 @@ function OutOfControlDot(props: {
 export default function SixSigmaChart({ teamId, teamName, color = '#22c55e' }: Props) {
   const [metric, setMetric] = useState<Metric>('goals_scored')
   const [data, setData] = useState<ControlChartData | null>(null)
+  const [partialValues, setPartialValues] = useState<number[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -37,12 +39,13 @@ export default function SixSigmaChart({ teamId, teamName, color = '#22c55e' }: P
     setLoading(true)
     setError(null)
     setData(null)
+    setPartialValues([])
     api.getTeamControlChart(teamId, metric)
       .then((d) => {
-        // Backend returns {error, values} when insufficient data — not a real ControlChartData
-        const maybeError = (d as unknown as { error?: string }).error
-        if (maybeError) {
-          setError(maybeError)
+        const resp = d as unknown as { error?: string; values?: number[] }
+        if (resp.error) {
+          setError(resp.error)
+          setPartialValues(resp.values ?? [])
         } else {
           setData(d)
         }
@@ -83,15 +86,65 @@ export default function SixSigmaChart({ teamId, teamName, color = '#22c55e' }: P
 
       {loading && <div className="text-slate-400 text-sm py-8 text-center animate-pulse">Loading chart…</div>}
 
-      {error && (
-        <div className="rounded-xl bg-slate-700/30 border border-slate-600/40 p-4 text-center">
-          <p className="text-slate-400 text-sm font-medium">Insufficient match data</p>
-          <p className="text-slate-500 text-xs mt-1">
-            Need at least 2 finished matches to build control limits.
-            Chart will populate as the tournament progresses.
-          </p>
-        </div>
-      )}
+      {error && (() => {
+        const stats = getTeamStats(teamName)
+        const expectedGoals = (1.3 * Math.pow(stats.attack / 72, 1.3)).toFixed(2)
+        const played = partialValues.length
+        const needed = Math.max(0, 2 - played)
+        return (
+          <div className="space-y-3">
+            {/* Match progress */}
+            <div className="rounded-xl bg-slate-700/30 border border-slate-600/40 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-slate-300 text-sm font-medium">{teamName}</p>
+                <span className="text-xs text-slate-500">{played}/3 group matches</span>
+              </div>
+              <div className="flex gap-1.5 mb-3">
+                {[0, 1, 2].map(i => (
+                  <div key={i} className={`flex-1 h-2 rounded-full ${
+                    i < played ? 'bg-green-500' : 'bg-slate-600'
+                  }`} />
+                ))}
+              </div>
+              <p className="text-xs text-slate-500">
+                {needed > 0
+                  ? `Need ${needed} more finished match${needed !== 1 ? 'es' : ''} to compute I-MR control limits.`
+                  : 'Building control limits…'}
+                {played > 0 && (
+                  <span className="ml-1">
+                    {metric === 'goals_scored' ? 'Goals scored' : 'Goals conceded'} so far:{' '}
+                    {partialValues.map(v => v.toFixed(0)).join(', ')}.
+                  </span>
+                )}
+              </p>
+            </div>
+
+            {/* Scouting baseline */}
+            <div className="rounded-xl bg-slate-700/20 border border-slate-600/30 p-3">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-2">
+                2025-26 Scouting Baseline
+              </p>
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div>
+                  <p className="text-slate-500 mb-0.5">Attack</p>
+                  <p className="text-emerald-400 font-bold text-base">{stats.attack}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 mb-0.5">Defense</p>
+                  <p className="text-blue-400 font-bold text-base">{stats.defense}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 mb-0.5">Exp. Goals</p>
+                  <p className="text-amber-400 font-bold text-base">{expectedGoals}</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-600 mt-2 text-center">
+                Control chart populates after 2nd WC match is played
+              </p>
+            </div>
+          </div>
+        )
+      })()}
 
       {data && !loading && values.length >= 2 && (
         <>

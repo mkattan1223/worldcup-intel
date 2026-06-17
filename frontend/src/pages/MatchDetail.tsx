@@ -477,6 +477,12 @@ function H2HView({
           {agg.numberOfMatches} total meetings · {agg.totalGoals ?? '?'} goals
         </p>
       )}
+      {agg?.numberOfMatches != null && agg.numberOfMatches > matches.length && (
+        <p className="text-xs text-slate-600 text-center italic">
+          {agg.numberOfMatches - matches.length} earlier meeting{agg.numberOfMatches - matches.length > 1 ? 's' : ''} exist
+          but are not accessible via the current data subscription.
+        </p>
+      )}
     </div>
   )
 }

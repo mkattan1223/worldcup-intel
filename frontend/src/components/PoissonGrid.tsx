@@ -80,20 +80,20 @@ export default function PoissonGrid({ matchId }: Props) {
 
   if (!data) return null
 
-  // Use static scouting data when fewer than 2 WC matches played per team
-  const needsStaticFallback = data.home_stats.matches_used < 2 || data.away_stats.matches_used < 2
-  let displayHome = data
-  let homeLambda = data.home_lambda
-  let awayLambda = data.away_lambda
-  let usingStatic = false
+  // Bayesian blend: 5 virtual matches of prior strength from scouting ratings
+  // At 0 WC matches → 100% static, 1 match → 83% static, 5 → 50%, 10 → 33%
+  const homeRatings = getTeamStats(data.home_team_name)
+  const awayRatings = getTeamStats(data.away_team_name)
+  const homeStaticLambda = staticLambda(homeRatings.attack, awayRatings.defense)
+  const awayStaticLambda = staticLambda(awayRatings.attack, homeRatings.defense)
 
-  if (needsStaticFallback) {
-    const homeStats = getTeamStats(data.home_team_name)
-    const awayStats = getTeamStats(data.away_team_name)
-    homeLambda = staticLambda(homeStats.attack, awayStats.defense)
-    awayLambda = staticLambda(awayStats.attack, homeStats.defense)
-    usingStatic = true
-  }
+  const PRIOR = 5
+  const hw = data.home_stats.matches_used / (data.home_stats.matches_used + PRIOR)
+  const aw = data.away_stats.matches_used / (data.away_stats.matches_used + PRIOR)
+
+  const homeLambda = parseFloat((homeStaticLambda * (1 - hw) + data.home_lambda * hw).toFixed(3))
+  const awayLambda = parseFloat((awayStaticLambda * (1 - aw) + data.away_lambda * aw).toFixed(3))
+  const usingStatic = data.home_stats.matches_used < 5 || data.away_stats.matches_used < 5
 
   const computed = buildPoissonGrid(homeLambda, awayLambda)
   const maxProb = Math.max(...computed.grid.flat())
@@ -104,7 +104,7 @@ export default function PoissonGrid({ matchId }: Props) {
     <div className="space-y-5">
       {usingStatic && (
         <div className="rounded-xl bg-amber-950/30 border border-amber-700/30 px-3 py-2 text-xs text-amber-400">
-          Using scouting ratings (insufficient WC match history yet). λ updates as games are played.
+          Blending 2025-26 scouting ratings with WC match data. λ shifts toward live data as games are played.
         </div>
       )}
 
@@ -131,7 +131,9 @@ export default function PoissonGrid({ matchId }: Props) {
             <div className="text-xs text-slate-500 mt-0.5">xG (λ)</div>
             <div className="text-xs text-slate-600 mt-1">
               {stats.avg_scored.toFixed(2)} scored · {stats.avg_conceded.toFixed(2)} conceded
-              <span className="ml-1">({stats.matches_used} WC matches)</span>
+              <span className="ml-1">
+                ({stats.matches_used === 0 ? 'scouting only' : `${stats.matches_used} WC match${stats.matches_used > 1 ? 'es' : ''}`})
+              </span>
             </div>
           </div>
         ))}

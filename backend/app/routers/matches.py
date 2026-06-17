@@ -1,7 +1,10 @@
+import logging
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_supabase
 from app.services.football_data import get_football_data_client
 from app.services.poisson import score_probability_grid
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -75,8 +78,8 @@ async def match_lineups(match_id: int):
 @router.get("/{match_id}/auto-analysis")
 async def auto_analysis(match_id: int):
     """
-    Auto-calculate xG for each team from their last 10 WC matches in Supabase,
-    then return the full Poisson probability grid with no manual input needed.
+    Auto-calculate xG using all-competition recent matches (Football-Data.org first,
+    Supabase WC fallback). Frontend applies Bayesian blend with static scouting ratings.
     """
     db = get_supabase()
 
@@ -88,30 +91,53 @@ async def auto_analysis(match_id: int):
     home_id = match["home_team_id"]
     away_id = match["away_team_id"]
 
-    def team_stats(team_id: int) -> dict:
-        res = (
-            db.table("matches")
-            .select("ft_home,ft_away,home_team_id,away_team_id")
-            .or_(f"home_team_id.eq.{team_id},away_team_id.eq.{team_id}")
-            .eq("status", "FINISHED")
-            .order("utc_date", desc=True)
-            .limit(10)
-            .execute()
-        )
-        rows = res.data or []
-        scored, conceded = [], []
-        for m in rows:
-            if m["ft_home"] is None or m["ft_away"] is None:
-                continue
-            is_home = m["home_team_id"] == team_id
-            scored.append(m["ft_home"] if is_home else m["ft_away"])
-            conceded.append(m["ft_away"] if is_home else m["ft_home"])
-        avg_s = round(sum(scored) / len(scored), 3) if scored else 1.2
-        avg_c = round(sum(conceded) / len(conceded), 3) if conceded else 1.1
-        return {"avg_scored": avg_s, "avg_conceded": avg_c, "matches_used": len(scored)}
+    async def fetch_team_stats(team_id: int) -> dict:
+        scored: list[float] = []
+        conceded: list[float] = []
 
-    home_stats = team_stats(home_id)
-    away_stats = team_stats(away_id)
+        # Primary: Football-Data.org (no competition filter = all competitions)
+        try:
+            client = get_football_data_client()
+            recent = await client.get_team_recent_matches(team_id, limit=15)
+            for m in recent:
+                ft = (m.get("score") or {}).get("fullTime") or {}
+                is_home = (m.get("homeTeam") or {}).get("id") == team_id
+                gs = ft.get("home") if is_home else ft.get("away")
+                gc = ft.get("away") if is_home else ft.get("home")
+                if gs is not None and gc is not None:
+                    scored.append(float(gs))
+                    conceded.append(float(gc))
+        except Exception as exc:
+            logger.warning("FDB auto-analysis failed for team %s: %s", team_id, exc)
+
+        # Fallback: Supabase WC data (if FDB gave nothing)
+        if not scored:
+            res = (
+                db.table("matches")
+                .select("ft_home,ft_away,home_team_id,away_team_id")
+                .or_(f"home_team_id.eq.{team_id},away_team_id.eq.{team_id}")
+                .eq("status", "FINISHED")
+                .order("utc_date", desc=True)
+                .limit(15)
+                .execute()
+            )
+            for m in res.data:
+                is_home = m["home_team_id"] == team_id
+                gs = m["ft_home"] if is_home else m["ft_away"]
+                gc = m["ft_away"] if is_home else m["ft_home"]
+                if gs is not None and gc is not None:
+                    scored.append(float(gs))
+                    conceded.append(float(gc))
+
+        n = len(scored)
+        return {
+            "avg_scored": round(sum(scored) / n, 3) if n else 1.2,
+            "avg_conceded": round(sum(conceded) / n, 3) if n else 1.1,
+            "matches_used": n,
+        }
+
+    home_stats = await fetch_team_stats(home_id)
+    away_stats = await fetch_team_stats(away_id)
 
     # Dixon-Coles inspired: blend attack vs opponent defence
     home_lambda = round((home_stats["avg_scored"] + away_stats["avg_conceded"]) / 2, 3)

@@ -59,6 +59,7 @@ export const TEAM_STATS: Record<string, RadarStats> = {
   'Algeria':          { attack: 70, defense: 70, pressing: 70, possession: 70, pace: 75, setPieces: 70 },
   'South Africa':     { attack: 60, defense: 70, pressing: 70, possession: 60, pace: 75, setPieces: 65 },
   'DR Congo':         { attack: 65, defense: 65, pressing: 70, possession: 60, pace: 80, setPieces: 65 },
+  'Congo':            { attack: 65, defense: 65, pressing: 70, possession: 60, pace: 80, setPieces: 65 },
   'Mali':             { attack: 65, defense: 65, pressing: 70, possession: 65, pace: 75, setPieces: 65 },
   'Tunisia':          { attack: 65, defense: 75, pressing: 70, possession: 65, pace: 70, setPieces: 70 },
   'Cape Verde':       { attack: 62, defense: 66, pressing: 65, possession: 62, pace: 72, setPieces: 63 },
