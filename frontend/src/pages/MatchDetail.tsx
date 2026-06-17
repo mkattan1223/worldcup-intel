@@ -220,7 +220,7 @@ export default function MatchDetail() {
           <div>
             <SectionHeader
               title="Tactical Formation"
-              desc="Official starting lineups with shirt numbers. Released ~1h before kick-off."
+              desc="Coach's preferred system based on 2025-26 season. Official lineups not available on free API tier."
             />
             <FormationDiagram
               matchId={matchId}

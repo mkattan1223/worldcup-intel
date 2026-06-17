@@ -34,8 +34,19 @@ async def get_team(team_id: int):
 
 @router.get("/{team_id}/matches")
 async def team_matches(team_id: int, status: str | None = Query(None)):
-    client = get_football_data_client()
-    return await client.get_team_matches(team_id, status=status)
+    # Query Supabase (snake_case, matches Match type) rather than Football-Data.org (camelCase)
+    db = get_supabase()
+    query = (
+        db.table("matches")
+        .select("*")
+        .or_(f"home_team_id.eq.{team_id},away_team_id.eq.{team_id}")
+        .order("utc_date", desc=True)
+        .limit(20)
+    )
+    if status:
+        query = query.eq("status", status)
+    result = query.execute()
+    return result.data or []
 
 
 @router.get("/{team_id}/control-chart")
