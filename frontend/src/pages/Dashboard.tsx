@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMatches } from '../hooks/useMatches'
 import { useStandings } from '../hooks/useTeams'
 import MatchCard from '../components/MatchCard'
@@ -78,33 +78,88 @@ function GroupTable({ group, rows }: { group: string; rows: Standing[] }) {
   )
 }
 
-const BRACKET_ROUNDS = [
-  { label: 'R32', slots: 16 },
-  { label: 'R16', slots: 8 },
-  { label: 'QF',  slots: 4 },
-  { label: 'SF',  slots: 2 },
-  { label: '🏆',  slots: 1 },
-]
-
 function BracketView() {
+  const BOX_H = 44
+  const BOX_W = 110
+  const CONN = 40
+  const ROW_U = 48
+  const HDR = 18
+
+  const colX = (r: number) => r * (BOX_W + CONN)
+  const midX = (r: number) => colX(r) + BOX_W + CONN / 2
+
+  function getCY(r: number, i: number): number {
+    if (r === 0) return HDR + i * ROW_U + BOX_H / 2
+    return (getCY(r - 1, i * 2) + getCY(r - 1, i * 2 + 1)) / 2
+  }
+
+  const COUNTS = [16, 8, 4, 2, 1]
+  const LABELS = ['R32', 'R16', 'QF', 'SF', 'Final']
+  const SVG_W = colX(4) + BOX_W
+  const SVG_H = HDR + 16 * ROW_U
+
+  const headers: ReactNode[] = LABELS.map((label, r) => (
+    <text key={`h${r}`}
+      x={colX(r) + BOX_W / 2} y={HDR - 4}
+      textAnchor="middle" fill="#475569" fontSize={8} fontWeight="700">
+      {label}
+    </text>
+  ))
+
+  const connectors: ReactNode[] = []
+  const boxes: ReactNode[] = []
+
+  COUNTS.forEach((count, r) => {
+    for (let i = 0; i < count; i++) {
+      const y0 = getCY(r, i)
+      const bx = colX(r)
+      const by = y0 - BOX_H / 2
+
+      boxes.push(
+        <g key={`m${r}-${i}`}>
+          <rect x={bx} y={by} width={BOX_W} height={BOX_H}
+            rx={4} fill="#0f172a" stroke="#334155" strokeWidth={1} />
+          <line x1={bx} y1={y0} x2={bx + BOX_W} y2={y0}
+            stroke="#1e293b" strokeWidth={1} />
+          <text x={bx + 7} y={y0 - 9}
+            fill="#475569" fontSize={8.5} dominantBaseline="middle">TBD</text>
+          <text x={bx + 7} y={y0 + 9}
+            fill="#475569" fontSize={8.5} dominantBaseline="middle">TBD</text>
+        </g>
+      )
+
+      if (r < 4) {
+        const mx = midX(r)
+        connectors.push(
+          <line key={`ra-${r}-${i}`}
+            x1={bx + BOX_W} y1={y0} x2={mx} y2={y0}
+            stroke="#334155" strokeWidth={1} />
+        )
+        if (i % 2 === 0) {
+          const sibY = getCY(r, i + 1)
+          const pY  = getCY(r + 1, i >> 1)
+          connectors.push(
+            <line key={`vc-${r}-${i}`}
+              x1={mx} y1={y0} x2={mx} y2={sibY}
+              stroke="#334155" strokeWidth={1} />,
+            <line key={`la-${r}-${i}`}
+              x1={mx} y1={pY} x2={colX(r + 1)} y2={pY}
+              stroke="#334155" strokeWidth={1} />
+          )
+        }
+      }
+    }
+  })
+
   return (
-    <div>
-      <div className="flex gap-2 overflow-x-auto pb-2">
-        {BRACKET_ROUNDS.map(({ label, slots }) => (
-          <div key={label} className="flex-shrink-0 w-24">
-            <p className="text-xs text-slate-500 text-center font-semibold mb-2">{label}</p>
-            <div className="space-y-1">
-              {Array.from({ length: slots }).map((_, i) => (
-                <div key={i} className="h-7 rounded border border-slate-700/50 bg-slate-700/20 flex items-center px-2">
-                  <span className="text-xs text-slate-600 truncate">TBD</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-slate-600 mt-2 text-center">
-        Bracket updates as group stage concludes
+    <div className="overflow-x-auto">
+      <svg width={SVG_W} height={SVG_H} style={{ display: 'block' }}>
+        {connectors}
+        {boxes}
+        {headers}
+      </svg>
+      <p className="text-xs text-slate-600 mt-1.5 text-center pb-1">
+        R32 begins Jun 29 · bracket fills as group stage concludes
       </p>
     </div>
   )

@@ -135,7 +135,7 @@ async def auto_analysis(match_id: int):
 
 
 @router.get("/{match_id}/head2head")
-async def head2head(match_id: int, limit: int = Query(20)):
+async def head2head(match_id: int, limit: int = Query(50)):
     """Fetch H2H history and normalize to snake_case for the frontend."""
     client = get_football_data_client()
     raw = await client.get_match_head2head(match_id, limit=limit)

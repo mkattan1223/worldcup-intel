@@ -15,7 +15,9 @@ export function useStandings() {
   }, [])
 
   const groups = standings.reduce<Record<string, Standing[]>>((acc, s) => {
-    const key = s.group ?? s.stage
+    // Normalize "Group A" → "GROUP_A" so Dashboard filter (startsWith 'GROUP_') works
+    const raw = s.group ?? s.stage ?? 'UNKNOWN'
+    const key = raw.toUpperCase().replace(/\s+/g, '_')
     if (!acc[key]) acc[key] = []
     acc[key].push(s)
     return acc

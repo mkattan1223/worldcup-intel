@@ -7,11 +7,10 @@ import RadarChart from '../components/RadarChart'
 import PoissonGrid from '../components/PoissonGrid'
 import SixSigmaChart from '../components/SixSigmaChart'
 import FormationDiagram from '../components/FormationDiagram'
-import CrowdFactor from '../components/CrowdFactor'
 import Tactics from '../components/Tactics'
 import { getVenueForMatch, venueLabel } from '../utils/venues'
 
-type Tab = 'overview' | 'poisson' | 'radar' | 'formation' | 'tactics' | 'sixsigma' | 'crowd' | 'h2h'
+type Tab = 'overview' | 'poisson' | 'radar' | 'formation' | 'tactics' | 'sixsigma' | 'h2h'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview' },
@@ -20,7 +19,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'formation', label: 'Formation' },
   { id: 'tactics',   label: 'Tactics' },
   { id: 'sixsigma',  label: '6σ Control' },
-  { id: 'crowd',     label: 'Crowd Factor' },
   { id: 'h2h',       label: 'Head2Head' },
 ]
 
@@ -265,16 +263,6 @@ export default function MatchDetail() {
           </div>
         )}
 
-        {tab === 'crowd' && (
-          <div>
-            <SectionHeader
-              title="Crowd Factor Analysis"
-              desc="Stadium atmosphere, capacity analysis, and crowd bias estimates."
-            />
-            <CrowdFactor match={match} />
-          </div>
-        )}
-
         {tab === 'h2h' && (
           <div>
             <SectionHeader
@@ -461,7 +449,7 @@ function H2HView({
 
       {/* Match list */}
       <div className="space-y-1.5">
-        {matches.slice(0, 10).map(m => {
+        {matches.map(m => {
           const h = m.ft_home ?? 0
           const a = m.ft_away ?? 0
           return (

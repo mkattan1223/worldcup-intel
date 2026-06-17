@@ -49,6 +49,30 @@ async def team_matches(team_id: int, status: str | None = Query(None)):
     return result.data or []
 
 
+@router.get("/{team_id}/recent-matches")
+async def team_recent_matches(team_id: int, limit: int = Query(10)):
+    """Last N finished matches for a team across ALL competitions (Football-Data.org)."""
+    client = get_football_data_client()
+    raw = await client.get_team_recent_matches(team_id, limit=limit)
+    results = []
+    for m in raw:
+        ft = (m.get("score") or {}).get("fullTime") or {}
+        is_home = (m.get("homeTeam") or {}).get("id") == team_id
+        results.append({
+            "id": m.get("id"),
+            "utc_date": m.get("utcDate"),
+            "competition": (m.get("competition") or {}).get("name"),
+            "home_team_name": (m.get("homeTeam") or {}).get("name"),
+            "away_team_name": (m.get("awayTeam") or {}).get("name"),
+            "ft_home": ft.get("home"),
+            "ft_away": ft.get("away"),
+            "is_home": is_home,
+            "goals_scored": ft.get("home") if is_home else ft.get("away"),
+            "goals_conceded": ft.get("away") if is_home else ft.get("home"),
+        })
+    return results
+
+
 @router.get("/{team_id}/control-chart")
 async def team_control_chart(
     team_id: int,
