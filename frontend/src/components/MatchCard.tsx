@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import type { Match } from '../types'
-import { venueLabel } from '../utils/venues'
+import { getVenueForMatch, venueLabel } from '../utils/venues'
 
 const STAGE_LABELS: Record<string, string> = {
   GROUP_STAGE: 'Group Stage', LAST_32: 'Round of 32', LAST_16: 'Round of 16',
@@ -105,10 +105,10 @@ export default function MatchCard({ match }: { match: Match }) {
         {/* Venue + date footer */}
         <div className="px-4 pb-3 flex items-center justify-between">
           <span className="text-xs text-slate-500 truncate">
-            {match.venue
-              ? <>{venueLabel(match.venue)}</>
-              : <span className="italic">Venue TBA</span>
-            }
+            {(() => {
+              const v = getVenueForMatch(match)
+              return v ? venueLabel(v) : <span className="italic text-slate-600">Venue TBA</span>
+            })()}
           </span>
           {(isDone || isLive) && (
             <span className="text-xs text-slate-600 ml-2 flex-shrink-0">

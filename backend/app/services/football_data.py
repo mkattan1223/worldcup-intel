@@ -94,6 +94,16 @@ class FootballDataClient:
         data = await self._get(f"/teams/{team_id}/matches", params=params)
         return data.get("matches", [])
 
+    async def get_team_recent_matches(
+        self,
+        team_id: int,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Fetch last N finished matches without restricting to WC competition."""
+        params: dict[str, Any] = {"status": "FINISHED", "limit": limit}
+        data = await self._get(f"/teams/{team_id}/matches", params=params)
+        return data.get("matches", [])
+
     # ------------------------------------------------------------------
     # Standings
     # ------------------------------------------------------------------

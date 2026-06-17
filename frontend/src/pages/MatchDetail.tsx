@@ -8,15 +8,17 @@ import PoissonGrid from '../components/PoissonGrid'
 import SixSigmaChart from '../components/SixSigmaChart'
 import FormationDiagram from '../components/FormationDiagram'
 import CrowdFactor from '../components/CrowdFactor'
-import { venueLabel } from '../utils/venues'
+import Tactics from '../components/Tactics'
+import { getVenueForMatch, venueLabel } from '../utils/venues'
 
-type Tab = 'overview' | 'poisson' | 'radar' | 'formation' | 'sixsigma' | 'crowd' | 'h2h'
+type Tab = 'overview' | 'poisson' | 'radar' | 'formation' | 'tactics' | 'sixsigma' | 'crowd' | 'h2h'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview' },
   { id: 'poisson',   label: 'Poisson' },
   { id: 'radar',     label: 'Radar' },
   { id: 'formation', label: 'Formation' },
+  { id: 'tactics',   label: 'Tactics' },
   { id: 'sixsigma',  label: '6σ Control' },
   { id: 'crowd',     label: 'Crowd Factor' },
   { id: 'h2h',       label: 'Head2Head' },
@@ -77,6 +79,7 @@ export default function MatchDetail() {
 
   const isDone = match.status === 'FINISHED'
   const isLive = ['LIVE', 'IN_PLAY', 'PAUSED'].includes(match.status)
+  const venueDisplay = getVenueForMatch(match)
 
   return (
     <div className="space-y-5">
@@ -161,8 +164,8 @@ export default function MatchDetail() {
         {/* Date + venue */}
         <div className="mt-4 text-center">
           <p className="text-xs text-slate-500">{fmtDate(match.utc_date)}</p>
-          {match.venue && (
-            <p className="text-xs text-slate-600 mt-0.5">{venueLabel(match.venue)}</p>
+          {venueDisplay && (
+            <p className="text-xs text-slate-600 mt-0.5">{venueLabel(venueDisplay)}</p>
           )}
         </div>
       </div>
@@ -204,13 +207,9 @@ export default function MatchDetail() {
           <div>
             <SectionHeader
               title="Team Radar Comparison"
-              desc="Normalised performance metrics across all tournament matches played."
+              desc="Scouting ratings across 6 dimensions based on international form and tactical profile."
             />
             <RadarChart
-              homeMatches={homeMatches}
-              awayMatches={awayMatches}
-              homeTeamId={match.home_team_id}
-              awayTeamId={match.away_team_id}
               homeTeamName={match.home_team_name}
               awayTeamName={match.away_team_name}
             />
@@ -225,6 +224,19 @@ export default function MatchDetail() {
             />
             <FormationDiagram
               matchId={matchId}
+              homeTeamName={match.home_team_name}
+              awayTeamName={match.away_team_name}
+            />
+          </div>
+        )}
+
+        {tab === 'tactics' && (
+          <div>
+            <SectionHeader
+              title="Tactics & Coach Info"
+              desc="Formation, pressing philosophy, defensive shape, and key tactical instructions."
+            />
+            <Tactics
               homeTeamName={match.home_team_name}
               awayTeamName={match.away_team_name}
             />
@@ -295,6 +307,8 @@ function Overview({
 }: {
   match: Match; homeMatches: Match[]; awayMatches: Match[]
 }) {
+  const venue = getVenueForMatch(match)
+
   function teamRecord(matches: Match[], teamId: number) {
     const fin = matches.filter(m => m.status === 'FINISHED')
     let w = 0, d = 0, l = 0, gf = 0, ga = 0
@@ -317,7 +331,7 @@ function Overview({
     <div className="space-y-5">
       <div className="grid grid-cols-3 gap-3 text-sm text-center">
         {[
-          { label: 'Venue', value: match.venue ?? 'TBD' },
+          { label: 'Venue', value: venue ? venueLabel(venue) : 'TBD' },
           { label: 'Stage', value: (match.stage ?? '').replace(/_/g, ' ') },
           { label: 'Matchday', value: match.matchday != null ? `MD ${match.matchday}` : 'Knockout' },
         ].map(({ label, value }) => (

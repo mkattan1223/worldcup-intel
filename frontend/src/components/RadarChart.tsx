@@ -8,97 +8,26 @@ import {
   Legend,
   Tooltip,
 } from 'recharts'
-import type { Match } from '../types'
-
-interface TeamStats {
-  goalsFor: number
-  goalsAgainst: number
-  wins: number
-  draws: number
-  played: number
-  cleanSheets: number
-}
-
-function computeStats(matches: Match[], teamId: number): TeamStats {
-  const finished = matches.filter(m => m.status === 'FINISHED')
-  let goalsFor = 0, goalsAgainst = 0, wins = 0, draws = 0, cleanSheets = 0
-  for (const m of finished) {
-    const isHome = m.home_team_id === teamId
-    const gf = isHome ? (m.ft_home ?? 0) : (m.ft_away ?? 0)
-    const ga = isHome ? (m.ft_away ?? 0) : (m.ft_home ?? 0)
-    goalsFor += gf
-    goalsAgainst += ga
-    if (gf > ga) wins++
-    else if (gf === ga) draws++
-    if (ga === 0) cleanSheets++
-  }
-  return { goalsFor, goalsAgainst, wins, draws, played: finished.length, cleanSheets }
-}
-
-function normalize(value: number, max: number) {
-  return max === 0 ? 0 : Math.round((value / max) * 100)
-}
+import { getTeamStats } from '../data/teamStats'
 
 interface Props {
-  homeMatches: Match[]
-  awayMatches: Match[]
-  homeTeamId: number
-  awayTeamId: number
   homeTeamName: string
   awayTeamName: string
 }
 
-export default function RadarChart({
-  homeMatches, awayMatches, homeTeamId, awayTeamId,
-  homeTeamName, awayTeamName,
-}: Props) {
-  const home = computeStats(homeMatches, homeTeamId)
-  const away = computeStats(awayMatches, awayTeamId)
+export default function RadarChart({ homeTeamName, awayTeamName }: Props) {
+  const home = getTeamStats(homeTeamName)
+  const away = getTeamStats(awayTeamName)
 
-  const maxPlayed = Math.max(home.played, away.played, 1)
-  const maxGF     = Math.max(home.goalsFor, away.goalsFor, 1)
-  const maxGA     = Math.max(home.goalsAgainst, away.goalsAgainst, 1)
-
+  // Scale 0-10 → 0-100 for Recharts domain
   const data = [
-    {
-      metric: 'Attack',
-      [homeTeamName]: normalize(home.goalsFor, maxGF),
-      [awayTeamName]: normalize(away.goalsFor, maxGF),
-    },
-    {
-      metric: 'Defence',
-      [homeTeamName]: normalize(maxGA - home.goalsAgainst, maxGA),
-      [awayTeamName]: normalize(maxGA - away.goalsAgainst, maxGA),
-    },
-    {
-      metric: 'Win Rate',
-      [homeTeamName]: normalize(home.wins, maxPlayed),
-      [awayTeamName]: normalize(away.wins, maxPlayed),
-    },
-    {
-      metric: 'Clean Sheets',
-      [homeTeamName]: normalize(home.cleanSheets, maxPlayed),
-      [awayTeamName]: normalize(away.cleanSheets, maxPlayed),
-    },
-    {
-      metric: 'Consistency',
-      [homeTeamName]: normalize(home.wins + home.draws, maxPlayed),
-      [awayTeamName]: normalize(away.wins + away.draws, maxPlayed),
-    },
-    {
-      metric: 'Goals/Game',
-      [homeTeamName]: normalize(home.goalsFor, maxGF),
-      [awayTeamName]: normalize(away.goalsFor, maxGF),
-    },
+    { metric: 'Attack',     [homeTeamName]: home.attack * 10,     [awayTeamName]: away.attack * 10 },
+    { metric: 'Defence',    [homeTeamName]: home.defense * 10,    [awayTeamName]: away.defense * 10 },
+    { metric: 'Pressing',   [homeTeamName]: home.pressing * 10,   [awayTeamName]: away.pressing * 10 },
+    { metric: 'Possession', [homeTeamName]: home.possession * 10, [awayTeamName]: away.possession * 10 },
+    { metric: 'Pace',       [homeTeamName]: home.pace * 10,       [awayTeamName]: away.pace * 10 },
+    { metric: 'Set Pieces', [homeTeamName]: home.setPieces * 10,  [awayTeamName]: away.setPieces * 10 },
   ]
-
-  if (home.played === 0 && away.played === 0) {
-    return (
-      <div className="flex items-center justify-center h-64 text-slate-500 text-sm">
-        No finished matches yet — radar will populate after games are played.
-      </div>
-    )
-  }
 
   return (
     <div>
@@ -116,27 +45,34 @@ export default function RadarChart({
             contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
             labelStyle={{ color: '#f8fafc', fontWeight: 600 }}
             itemStyle={{ color: '#94a3b8' }}
+            formatter={(val: number) => [(val / 10).toFixed(1), '']}
           />
         </RechartsRadar>
       </ResponsiveContainer>
 
-      <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+      <div className="grid grid-cols-3 gap-2 mt-4 text-xs">
         {[
-          { label: 'Goals Scored', h: home.goalsFor, a: away.goalsFor },
-          { label: 'Goals Conceded', h: home.goalsAgainst, a: away.goalsAgainst },
-          { label: 'Wins', h: home.wins, a: away.wins },
-          { label: 'Clean Sheets', h: home.cleanSheets, a: away.cleanSheets },
+          { label: 'Attack',     h: home.attack,     a: away.attack },
+          { label: 'Defence',    h: home.defense,    a: away.defense },
+          { label: 'Pressing',   h: home.pressing,   a: away.pressing },
+          { label: 'Possession', h: home.possession, a: away.possession },
+          { label: 'Pace',       h: home.pace,       a: away.pace },
+          { label: 'Set Pieces', h: home.setPieces,  a: away.setPieces },
         ].map(({ label, h, a }) => (
-          <div key={label} className="bg-slate-700/40 rounded-lg p-3">
-            <p className="text-slate-400 text-xs mb-1">{label}</p>
-            <div className="flex justify-between font-bold">
-              <span className="text-green-400">{h}</span>
-              <span className="text-slate-500 text-xs font-normal">vs</span>
-              <span className="text-blue-400">{a}</span>
+          <div key={label} className="bg-slate-700/40 rounded-lg p-2">
+            <p className="text-slate-500 text-xs mb-1 text-center">{label}</p>
+            <div className="flex justify-between items-center">
+              <span className={`font-bold ${h >= a ? 'text-emerald-400' : 'text-slate-400'}`}>{h.toFixed(1)}</span>
+              <span className="text-slate-600 text-xs">vs</span>
+              <span className={`font-bold ${a >= h ? 'text-blue-400' : 'text-slate-400'}`}>{a.toFixed(1)}</span>
             </div>
           </div>
         ))}
       </div>
+
+      <p className="text-xs text-slate-600 mt-3 text-center">
+        Scouting ratings based on international form and tactical profile (scale 0–10)
+      </p>
     </div>
   )
 }
