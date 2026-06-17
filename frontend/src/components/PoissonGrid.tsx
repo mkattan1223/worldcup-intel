@@ -87,7 +87,7 @@ export default function PoissonGrid({ matchId }: Props) {
   const homeStaticLambda = staticLambda(homeRatings.attack, awayRatings.defense)
   const awayStaticLambda = staticLambda(awayRatings.attack, homeRatings.defense)
 
-  const PRIOR = 5
+  const PRIOR = 3
   const hw = data.home_stats.matches_used / (data.home_stats.matches_used + PRIOR)
   const aw = data.away_stats.matches_used / (data.away_stats.matches_used + PRIOR)
 

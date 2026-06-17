@@ -1,8 +1,11 @@
 import logging
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from app.database import get_supabase
 from app.services.football_data import get_football_data_client
 from app.services.poisson import score_probability_grid
+from app.data.csv_loader import find_h2h, find_form
+from app.data.team_name_map import TEAM_NAME_MAP, resolve_csv_name
 
 logger = logging.getLogger(__name__)
 
@@ -41,45 +44,168 @@ async def get_match(match_id: int):
 
 @router.get("/{match_id}/lineups")
 async def match_lineups(match_id: int):
-    """Fetch starting lineups and formations from Football-Data.org."""
-    client = get_football_data_client()
-    raw = await client.get_match(match_id)
+    """Try ESPN API for real lineups; fall back to graceful empty response."""
+    db = get_supabase()
+    match_result = db.table("matches").select("*").eq("id", match_id).single().execute()
+    match = match_result.data or {}
 
-    def extract_side(team: dict) -> dict:
+    utc_date = match.get("utc_date", "")
+    home_name = match.get("home_team_name", "")
+    away_name = match.get("away_team_name", "")
+
+    # Build ESPN date string (YYYYMMDD)
+    espn_date = utc_date[:10].replace("-", "") if utc_date else ""
+
+    empty = {"formation": None, "lineup": [], "bench": []}
+
+    async def try_espn() -> dict | None:
+        if not espn_date:
+            return None
+        try:
+            scoreboard_url = (
+                f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard"
+                f"?dates={espn_date}"
+            )
+            async with httpx.AsyncClient(timeout=8) as client:
+                sb = await client.get(scoreboard_url)
+            if sb.status_code != 200:
+                return None
+            events = sb.json().get("events", [])
+
+            # Find matching event by team name similarity
+            espn_event_id = None
+            for ev in events:
+                comps = ev.get("competitions", [{}])
+                if not comps:
+                    continue
+                comp = comps[0]
+                teams = {c.get("team", {}).get("displayName", "").lower() for c in comp.get("competitors", [])}
+                if (home_name.lower() in teams or any(home_name.lower()[:5] in t for t in teams)):
+                    espn_event_id = ev.get("id")
+                    break
+
+            if not espn_event_id:
+                return None
+
+            summary_url = (
+                f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary"
+                f"?event={espn_event_id}"
+            )
+            async with httpx.AsyncClient(timeout=8) as client:
+                sm = await client.get(summary_url)
+            if sm.status_code != 200:
+                return None
+
+            rosters = sm.json().get("rosters", [])
+            if not rosters:
+                return None
+
+            def parse_side(roster: dict) -> dict:
+                formation = roster.get("formation", None)
+                entries = roster.get("entries", [])
+                lineup, bench = [], []
+                for e in entries:
+                    athlete = e.get("athlete", {})
+                    pos_obj = athlete.get("position", {})
+                    pos = pos_obj.get("abbreviation", "")
+                    player = {
+                        "id": athlete.get("id"),
+                        "name": athlete.get("displayName", ""),
+                        "shirtNumber": athlete.get("jersey"),
+                        "position": pos,
+                    }
+                    if e.get("position") == "starter":
+                        lineup.append(player)
+                    else:
+                        bench.append(player)
+                return {"formation": formation, "lineup": lineup, "bench": bench}
+
+            # Determine home / away from ESPN team names
+            home_side = {}
+            away_side = {}
+            for r in rosters:
+                team_name = r.get("team", {}).get("displayName", "")
+                if home_name.lower()[:5] in team_name.lower():
+                    home_side = parse_side(r)
+                else:
+                    away_side = parse_side(r)
+
+            if not home_side and len(rosters) >= 2:
+                home_side = parse_side(rosters[0])
+                away_side = parse_side(rosters[1])
+
+            return {"home": home_side or empty, "away": away_side or empty, "status": match.get("status", "SCHEDULED"), "source": "espn"}
+        except Exception as exc:
+            logger.warning("ESPN lineup fetch failed for match %s: %s", match_id, exc)
+            return None
+
+    espn_result = await try_espn()
+    if espn_result:
+        return espn_result
+
+    # FDB fallback (free tier rarely returns lineup data)
+    try:
+        client = get_football_data_client()
+        raw = await client.get_match(match_id)
+
+        def extract_side(team: dict) -> dict:
+            return {
+                "formation": team.get("formation"),
+                "lineup": [
+                    {"id": p.get("id"), "name": p.get("name"),
+                     "shirtNumber": p.get("shirtNumber"), "position": p.get("position")}
+                    for p in (team.get("lineup") or [])
+                ],
+                "bench": [
+                    {"id": p.get("id"), "name": p.get("name"),
+                     "shirtNumber": p.get("shirtNumber"), "position": p.get("position")}
+                    for p in (team.get("bench") or [])
+                ],
+            }
+
         return {
-            "formation": team.get("formation"),
-            "lineup": [
-                {
-                    "id": p.get("id"),
-                    "name": p.get("name"),
-                    "shirtNumber": p.get("shirtNumber"),
-                    "position": p.get("position"),
-                }
-                for p in (team.get("lineup") or [])
-            ],
-            "bench": [
-                {
-                    "id": p.get("id"),
-                    "name": p.get("name"),
-                    "shirtNumber": p.get("shirtNumber"),
-                    "position": p.get("position"),
-                }
-                for p in (team.get("bench") or [])
-            ],
+            "home": extract_side(raw.get("homeTeam", {})),
+            "away": extract_side(raw.get("awayTeam", {})),
+            "status": raw.get("status"),
         }
+    except Exception:
+        return {"home": empty, "away": empty, "status": "unavailable"}
 
+
+def _csv_team_name(team_id: int, supabase_name: str) -> str:
+    """Resolve a team's CSV name from their FDB id or Supabase display name."""
+    if team_id in TEAM_NAME_MAP:
+        return TEAM_NAME_MAP[team_id]
+    # Try alias map
+    resolved = resolve_csv_name(supabase_name)
+    return resolved
+
+
+def _team_stats_from_csv(team_id: int, team_name: str) -> dict:
+    """Compute avg goals scored/conceded from 2025+ CSV form data."""
+    csv_name = _csv_team_name(team_id, team_name)
+    rows = find_form(csv_name, since="2025-01-01")
+    scored, conceded = [], []
+    for r in rows:
+        is_home = r["home_team"] == csv_name
+        gs = r["home_score"] if is_home else r["away_score"]
+        gc = r["away_score"] if is_home else r["home_score"]
+        scored.append(float(gs))
+        conceded.append(float(gc))
+    n = len(scored)
     return {
-        "home": extract_side(raw.get("homeTeam", {})),
-        "away": extract_side(raw.get("awayTeam", {})),
-        "status": raw.get("status"),
+        "avg_scored": round(sum(scored) / n, 3) if n else 1.2,
+        "avg_conceded": round(sum(conceded) / n, 3) if n else 1.1,
+        "matches_used": n,
+        "csv_name": csv_name,
     }
 
 
 @router.get("/{match_id}/auto-analysis")
 async def auto_analysis(match_id: int):
     """
-    Auto-calculate xG using all-competition recent matches (Football-Data.org first,
-    Supabase WC fallback). Frontend applies Bayesian blend with static scouting ratings.
+    Auto-calculate xG using 2025+ form data from results.csv (all competitions).
+    Frontend applies Bayesian blend with static scouting ratings.
     """
     db = get_supabase()
 
@@ -91,53 +217,8 @@ async def auto_analysis(match_id: int):
     home_id = match["home_team_id"]
     away_id = match["away_team_id"]
 
-    async def fetch_team_stats(team_id: int) -> dict:
-        scored: list[float] = []
-        conceded: list[float] = []
-
-        # Primary: Football-Data.org (no competition filter = all competitions)
-        try:
-            client = get_football_data_client()
-            recent = await client.get_team_recent_matches(team_id, limit=15)
-            for m in recent:
-                ft = (m.get("score") or {}).get("fullTime") or {}
-                is_home = (m.get("homeTeam") or {}).get("id") == team_id
-                gs = ft.get("home") if is_home else ft.get("away")
-                gc = ft.get("away") if is_home else ft.get("home")
-                if gs is not None and gc is not None:
-                    scored.append(float(gs))
-                    conceded.append(float(gc))
-        except Exception as exc:
-            logger.warning("FDB auto-analysis failed for team %s: %s", team_id, exc)
-
-        # Fallback: Supabase WC data (if FDB gave nothing)
-        if not scored:
-            res = (
-                db.table("matches")
-                .select("ft_home,ft_away,home_team_id,away_team_id")
-                .or_(f"home_team_id.eq.{team_id},away_team_id.eq.{team_id}")
-                .eq("status", "FINISHED")
-                .order("utc_date", desc=True)
-                .limit(15)
-                .execute()
-            )
-            for m in res.data:
-                is_home = m["home_team_id"] == team_id
-                gs = m["ft_home"] if is_home else m["ft_away"]
-                gc = m["ft_away"] if is_home else m["ft_home"]
-                if gs is not None and gc is not None:
-                    scored.append(float(gs))
-                    conceded.append(float(gc))
-
-        n = len(scored)
-        return {
-            "avg_scored": round(sum(scored) / n, 3) if n else 1.2,
-            "avg_conceded": round(sum(conceded) / n, 3) if n else 1.1,
-            "matches_used": n,
-        }
-
-    home_stats = await fetch_team_stats(home_id)
-    away_stats = await fetch_team_stats(away_id)
+    home_stats = _team_stats_from_csv(home_id, match["home_team_name"])
+    away_stats = _team_stats_from_csv(away_id, match["away_team_name"])
 
     # Dixon-Coles inspired: blend attack vs opponent defence
     home_lambda = round((home_stats["avg_scored"] + away_stats["avg_conceded"]) / 2, 3)
@@ -189,6 +270,54 @@ async def head2head(match_id: int, limit: int = Query(50)):
 
     agg = raw.get("aggregates", {})
     return {"matches": matches, "aggregates": agg}
+
+
+@router.get("/{match_id}/head2head-full")
+async def head2head_full(match_id: int):
+    """Full H2H history from results.csv — all competitions, all time."""
+    db = get_supabase()
+    match_result = db.table("matches").select("*").eq("id", match_id).single().execute()
+    if not match_result.data:
+        raise HTTPException(status_code=404, detail="Match not found")
+    match = match_result.data
+
+    team_a_id = match["home_team_id"]
+    team_b_id = match["away_team_id"]
+    team_a_name_db = match["home_team_name"]
+    team_b_name_db = match["away_team_name"]
+
+    team_a_csv = _csv_team_name(team_a_id, team_a_name_db)
+    team_b_csv = _csv_team_name(team_b_id, team_b_name_db)
+
+    rows = find_h2h(team_a_csv, team_b_csv)
+
+    # Compute aggregates from actual data
+    a_wins = draws = b_wins = 0
+    for r in rows:
+        hs, as_ = int(r["home_score"]), int(r["away_score"])
+        team_a_is_home = r["home_team"] == team_a_csv
+        team_a_score = hs if team_a_is_home else as_
+        team_b_score = as_ if team_a_is_home else hs
+        if team_a_score > team_b_score:
+            a_wins += 1
+        elif team_a_score == team_b_score:
+            draws += 1
+        else:
+            b_wins += 1
+
+    return {
+        "team_a_name": team_a_name_db,
+        "team_b_name": team_b_name_db,
+        "team_a_csv": team_a_csv,
+        "team_b_csv": team_b_csv,
+        "matches": rows,
+        "aggregates": {
+            "total_matches": len(rows),
+            "team_a_wins": a_wins,
+            "draws": draws,
+            "team_b_wins": b_wins,
+        },
+    }
 
 
 @router.get("/{match_id}/poisson")

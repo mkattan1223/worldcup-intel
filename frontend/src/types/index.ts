@@ -105,6 +105,32 @@ export interface H2HData {
   }
 }
 
+export interface CsvMatch {
+  date: string
+  home_team: string
+  away_team: string
+  home_score: number
+  away_score: number
+  tournament: string
+  city: string
+  country: string
+  neutral: string
+}
+
+export interface FullH2HData {
+  team_a_name: string
+  team_b_name: string
+  team_a_csv: string
+  team_b_csv: string
+  matches: CsvMatch[]
+  aggregates: {
+    total_matches: number
+    team_a_wins: number
+    draws: number
+    team_b_wins: number
+  }
+}
+
 export interface ControlChartData {
   values: number[]
   moving_ranges: number[]

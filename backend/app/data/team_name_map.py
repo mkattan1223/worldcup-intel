@@ -1,0 +1,76 @@
+# Maps Football-Data.org team IDs to names used in results.csv
+TEAM_NAME_MAP: dict[int, str] = {
+    769: "Mexico",
+    804: "Senegal",
+    773: "France",
+    764: "Brazil",
+    762: "Argentina",
+    760: "Spain",
+    759: "Germany",
+    770: "England",
+    765: "Portugal",
+    771: "United States",
+    772: "South Korea",
+    774: "South Africa",
+    788: "Switzerland",
+    792: "Sweden",
+    799: "Croatia",
+    801: "Saudi Arabia",
+    802: "Tunisia",
+    803: "Turkey",
+    805: "Belgium",
+    815: "Morocco",
+    816: "Austria",
+    818: "Colombia",
+    825: "Egypt",
+    828: "Canada",
+    836: "Haiti",
+    758: "Uruguay",
+    761: "Paraguay",
+    763: "Ghana",
+    766: "Japan",
+    778: "Algeria",
+    779: "Australia",
+    783: "New Zealand",
+    791: "Ecuador",
+    798: "Czech Republic",
+    8030: "Qatar",
+    8049: "Jordan",
+    8062: "Iraq",
+    8070: "Uzbekistan",
+    8601: "Netherlands",
+    8872: "Norway",
+    8873: "Scotland",
+    9460: "Curaçao",
+    1060: "Bosnia and Herzegovina",
+    1930: "Cape Verde",
+    1934: "DR Congo",
+    1935: "Ivory Coast",
+    1836: "Panama",
+    840: "Iran",
+}
+
+# Extra aliases — Supabase/FDB names that differ from CSV names
+CSV_NAME_ALIASES: dict[str, str] = {
+    "USA": "United States",
+    "Congo DR": "DR Congo",
+    "Democratic Republic of the Congo": "DR Congo",
+    "Côte d'Ivoire": "Ivory Coast",
+    "Cote d'Ivoire": "Ivory Coast",
+    "Czechia": "Czech Republic",
+    "Czech Rep.": "Czech Republic",
+    "Bosnia-Herzegovina": "Bosnia and Herzegovina",
+    "Bosnia & Herzegovina": "Bosnia and Herzegovina",
+    "Curacao": "Curaçao",
+    "Korea Republic": "South Korea",
+    "Republic of Korea": "South Korea",
+    "Congo": "DR Congo",
+    "IR Iran": "Iran",
+}
+
+
+def resolve_csv_name(name: str) -> str:
+    """Normalize a team name to its CSV representation."""
+    if name in CSV_NAME_ALIASES:
+        return CSV_NAME_ALIASES[name]
+    return name

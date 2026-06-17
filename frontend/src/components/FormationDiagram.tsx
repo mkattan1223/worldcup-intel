@@ -1,4 +1,7 @@
+import { useState, useEffect } from 'react'
 import { getTeamTactics } from '../data/teamTactics'
+import { api } from '../services/api'
+import type { MatchLineups } from '../types'
 
 interface Position { x: number; y: number; label: string }
 
@@ -74,10 +77,17 @@ function guessFormation(f: string | null | undefined): string {
   return KNOWN.includes(clean) ? clean : '4-3-3'
 }
 
+function shortName(name: string): string {
+  const parts = name.trim().split(' ')
+  if (parts.length === 1) return name.slice(0, 8)
+  return parts[parts.length - 1].slice(0, 9)
+}
+
 function Pitch({
-  formation, color, flip = false,
-}: { formation: string; color: string; flip?: boolean }) {
+  formation, color, flip = false, players = [],
+}: { formation: string; color: string; flip?: boolean; players?: Array<{ name: string; shirtNumber?: string | number | null; position?: string | null }> }) {
   const positions = FORMATIONS[formation] ?? FORMATIONS['4-3-3']
+  const hasPlayers = players.length >= 11
   return (
     <svg viewBox="0 0 220 340" className="w-full max-w-[220px] mx-auto select-none">
       {Array.from({ length: 7 }).map((_, i) => (
@@ -100,15 +110,25 @@ function Pitch({
         const ry = flip
           ? (1 - pos.y / 100) * 324 + 8
           : (pos.y / 100) * 324 + 8
+        const player = hasPlayers ? players[i] : null
+        const topLabel = player ? String(player.shirtNumber ?? '') : pos.label
+        const botLabel = player ? shortName(player.name) : ''
         return (
           <g key={i}>
             <circle cx={rx + 1} cy={ry + 1} r={11} fill="black" opacity="0.25" />
             <circle cx={rx} cy={ry} r={11} fill={color} stroke="white" strokeWidth="1.5" />
-            <text x={rx} y={ry + 0.5}
+            <text x={rx} y={ry + (botLabel ? -2 : 0.5)}
               textAnchor="middle" dominantBaseline="middle"
-              fontSize="5.5" fontWeight="800" fill="white">
-              {pos.label}
+              fontSize={topLabel.length > 2 ? '4.5' : '5.5'} fontWeight="800" fill="white">
+              {topLabel}
             </text>
+            {botLabel && (
+              <text x={rx} y={ry + 6}
+                textAnchor="middle" dominantBaseline="middle"
+                fontSize="3.8" fontWeight="600" fill="rgba(255,255,255,0.85)">
+                {botLabel}
+              </text>
+            )}
           </g>
         )
       })}
@@ -125,19 +145,37 @@ interface Props {
 }
 
 export default function FormationDiagram({
-  homeTeamName, awayTeamName,
+  matchId, homeTeamName, awayTeamName,
   homeColor = '#22c55e', awayColor = '#3b82f6',
 }: Props) {
   const homeTactics = getTeamTactics(homeTeamName)
   const awayTactics = getTeamTactics(awayTeamName)
-  const hf = guessFormation(homeTactics.formation)
-  const af = guessFormation(awayTactics.formation)
+
+  const [lineups, setLineups] = useState<MatchLineups | null>(null)
+
+  useEffect(() => {
+    if (!matchId) return
+    api.getMatchLineups(matchId)
+      .then(data => {
+        if ((data.home?.lineup?.length ?? 0) > 0 || (data.away?.lineup?.length ?? 0) > 0) {
+          setLineups(data)
+        }
+      })
+      .catch(() => {})
+  }, [matchId])
+
+  const hFormation = guessFormation(lineups?.home?.formation ?? homeTactics.formation)
+  const aFormation = guessFormation(lineups?.away?.formation ?? awayTactics.formation)
+  const hPlayers = lineups?.home?.lineup ?? []
+  const aPlayers = lineups?.away?.lineup ?? []
+  const hasRealLineups = hPlayers.length >= 11 || aPlayers.length >= 11
 
   return (
     <div className="space-y-4">
       <div className="rounded-xl bg-slate-700/20 border border-slate-600/30 px-3 py-2 text-xs text-slate-400 text-center">
-        Tactical formations based on each coach's known preferred system.
-        Official lineups are not available on the free tier.
+        {hasRealLineups
+          ? `Official lineups via ESPN · ${hFormation} vs ${aFormation}`
+          : 'Tactical formations based on each coach\'s known preferred system. Official lineups not available on free API tier.'}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -145,15 +183,15 @@ export default function FormationDiagram({
           <p className="text-center text-sm font-bold mb-0.5" style={{ color: homeColor }}>
             {homeTeamName}
           </p>
-          <p className="text-center text-xs text-slate-500 mb-2">{hf}</p>
-          <Pitch formation={hf} color={homeColor} />
+          <p className="text-center text-xs text-slate-500 mb-2">{hFormation}</p>
+          <Pitch formation={hFormation} color={homeColor} players={hPlayers} />
         </div>
         <div>
           <p className="text-center text-sm font-bold mb-0.5" style={{ color: awayColor }}>
             {awayTeamName}
           </p>
-          <p className="text-center text-xs text-slate-500 mb-2">{af}</p>
-          <Pitch formation={af} color={awayColor} flip />
+          <p className="text-center text-xs text-slate-500 mb-2">{aFormation}</p>
+          <Pitch formation={aFormation} color={awayColor} flip players={aPlayers} />
         </div>
       </div>
     </div>

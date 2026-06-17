@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useMatch } from '../hooks/useMatches'
 import { api } from '../services/api'
-import type { Match, H2HData } from '../types'
+import type { Match, FullH2HData } from '../types'
 import RadarChart from '../components/RadarChart'
 import PoissonGrid from '../components/PoissonGrid'
 import SixSigmaChart from '../components/SixSigmaChart'
@@ -42,7 +42,7 @@ export default function MatchDetail() {
   const [tab, setTab] = useState<Tab>('overview')
   const [homeMatches, setHomeMatches] = useState<Match[]>([])
   const [awayMatches, setAwayMatches] = useState<Match[]>([])
-  const [h2hData, setH2hData] = useState<H2HData | null>(null)
+  const [h2hData, setH2hData] = useState<FullH2HData | null>(null)
 
   useEffect(() => {
     if (!match) return
@@ -54,7 +54,7 @@ export default function MatchDetail() {
       setAwayMatches(a)
     }).catch(() => {})
 
-    api.getMatchHead2Head(matchId)
+    api.getMatchHead2HeadFull(matchId)
       .then(setH2hData)
       .catch(() => {})
   }, [match, matchId])
@@ -267,7 +267,7 @@ export default function MatchDetail() {
           <div>
             <SectionHeader
               title="Head-to-Head History"
-              desc="Recent meetings between these two sides from Football-Data.org."
+              desc="All historical meetings from the international results database (1872–present)."
             />
             <H2HView
               data={h2hData}
@@ -406,7 +406,7 @@ function Overview({
 function H2HView({
   data, homeTeamName, awayTeamName,
 }: {
-  data: H2HData | null
+  data: FullH2HData | null
   homeTeamName: string
   awayTeamName: string
 }) {
@@ -417,24 +417,24 @@ function H2HView({
   )
 
   const matches = data.matches ?? []
-  const agg = data.aggregates
 
   if (!matches.length) return (
     <div className="text-center text-slate-500 py-10 text-sm">
-      No head-to-head history available for this fixture.
+      No head-to-head history found in the international results database.
     </div>
   )
 
-  const homeWins = agg?.homeTeam?.wins ?? 0
-  const draws = agg?.homeTeam?.draws ?? 0
-  const awayWins = agg?.awayTeam?.wins ?? 0
+  // W/D/L computed directly from match data (team A = home team of current match)
+  const teamAWins = data.aggregates.team_a_wins
+  const draws = data.aggregates.draws
+  const teamBWins = data.aggregates.team_b_wins
 
   return (
     <div className="space-y-4">
       {/* Summary */}
       <div className="grid grid-cols-3 gap-3 text-center">
         <div className="bg-emerald-900/30 border border-emerald-700/30 rounded-xl p-3">
-          <div className="text-2xl font-black text-emerald-400">{homeWins}</div>
+          <div className="text-2xl font-black text-emerald-400">{teamAWins}</div>
           <div className="text-xs text-slate-400 mt-0.5 truncate">{homeTeamName}</div>
         </div>
         <div className="bg-slate-700/40 border border-slate-600/30 rounded-xl p-3">
@@ -442,47 +442,35 @@ function H2HView({
           <div className="text-xs text-slate-500 mt-0.5">Draws</div>
         </div>
         <div className="bg-blue-900/30 border border-blue-700/30 rounded-xl p-3">
-          <div className="text-2xl font-black text-blue-400">{awayWins}</div>
+          <div className="text-2xl font-black text-blue-400">{teamBWins}</div>
           <div className="text-xs text-slate-400 mt-0.5 truncate">{awayTeamName}</div>
         </div>
       </div>
 
       {/* Match list */}
-      <div className="space-y-1.5">
-        {matches.map(m => {
-          const h = m.ft_home ?? 0
-          const a = m.ft_away ?? 0
+      <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
+        {matches.map((m, idx) => {
+          const h = m.home_score
+          const a = m.away_score
           return (
-            <div key={m.id} className="flex items-center gap-3 bg-slate-700/30 rounded-xl px-3 py-2.5 text-sm">
-              <span className="text-slate-500 text-xs w-20 flex-shrink-0">
-                {new Date(m.utc_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            <div key={`${m.date}-${idx}`} className="flex items-center gap-2 bg-slate-700/30 rounded-xl px-3 py-2 text-xs">
+              <span className="text-slate-500 w-[70px] flex-shrink-0">
+                {m.date.slice(0, 4)}
               </span>
-              <span className="flex-1 text-slate-300 text-xs truncate">
-                {m.home_team_name}
+              <span className="flex-1 text-slate-300 truncate">{m.home_team}</span>
+              <span className="font-bold text-white tabular-nums px-1">{h}–{a}</span>
+              <span className="flex-1 text-slate-300 truncate text-right">{m.away_team}</span>
+              <span className="text-slate-600 flex-shrink-0 hidden sm:block max-w-[120px] truncate">
+                {m.tournament}
               </span>
-              <span className="font-bold text-white tabular-nums text-xs px-2">{h}–{a}</span>
-              <span className="flex-1 text-slate-300 text-xs truncate text-right">
-                {m.away_team_name}
-              </span>
-              {m.competition && (
-                <span className="text-xs text-slate-600 flex-shrink-0 hidden sm:block">{m.competition}</span>
-              )}
             </div>
           )
         })}
       </div>
 
-      {agg?.numberOfMatches != null && (
-        <p className="text-xs text-slate-600 text-center">
-          {agg.numberOfMatches} total meetings · {agg.totalGoals ?? '?'} goals
-        </p>
-      )}
-      {agg?.numberOfMatches != null && agg.numberOfMatches > matches.length && (
-        <p className="text-xs text-slate-600 text-center italic">
-          {agg.numberOfMatches - matches.length} earlier meeting{agg.numberOfMatches - matches.length > 1 ? 's' : ''} exist
-          but are not accessible via the current data subscription.
-        </p>
-      )}
+      <p className="text-xs text-slate-600 text-center">
+        {matches.length} meetings · source: international results database (1872–present)
+      </p>
     </div>
   )
 }

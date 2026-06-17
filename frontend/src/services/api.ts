@@ -1,5 +1,6 @@
 import type {
   Match, Standing, Scorer, AutoAnalysis, MatchLineups, H2HData, ControlChartData,
+  FullH2HData,
 } from '../types'
 
 const API_PREFIX = (import.meta.env.VITE_API_URL as string | undefined) || '/api'
@@ -49,6 +50,9 @@ export const api = {
 
   getMatchHead2Head: (id: number) =>
     get<H2HData>(`/matches/${id}/head2head`),
+
+  getMatchHead2HeadFull: (id: number) =>
+    get<FullH2HData>(`/matches/${id}/head2head-full`),
 
   // Teams
   getStandings: () =>
